@@ -814,6 +814,7 @@ Item {
           }
 
           Column {
+            id: agendaColumn
             width: parent.width - gridColumn.width - Style.space(16)
             height: parent.height
             spacing: Style.space(8)
@@ -835,6 +836,7 @@ Item {
             }
 
             Text {
+              id: agendaHeading
               text: root.query.trim() !== ""
                 ? root.dayEvents.length + " MATCHING"
                 : Qt.formatDate(root.selectedDate, "dddd, d MMMM").toUpperCase()
@@ -846,9 +848,13 @@ Item {
             ListView {
               id: agendaList
               width: parent.width
-              // Shares the column with the detail card below, which only
-              // takes room when there is something selected to describe.
-              height: parent.height - Style.space(46) - detail.height
+              // The leftover after its siblings, measured rather than
+              // guessed: a guessed inset held only until the detail card
+              // wrapped to another line, and then the list pushed the
+              // window's hint row down onto it.
+              height: Math.max(Style.space(40), agendaColumn.height
+                - searchField.height - agendaHeading.height - detail.height
+                - agendaColumn.spacing * 3)
               clip: true
               model: root.dayEvents
               currentIndex: root.listIndex
