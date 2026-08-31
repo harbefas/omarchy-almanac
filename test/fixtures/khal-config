@@ -1,0 +1,16 @@
+[calendars]
+
+[[personal]]
+path = ~/.local/share/khal/calendars/personal/
+color = light green
+
+[[holidays]]
+path = ~/.local/share/khal/calendars/holidays/
+color = dark green
+readonly = True
+
+[sqlite]
+path = ~/.local/share/khal/khal.db
+
+[locale]
+timeformat = %H:%M

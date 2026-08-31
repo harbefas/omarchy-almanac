@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Khal.js is deliberately Qt-free so the parsing and grouping rules can be
-# checked here rather than by opening the panel and looking.
+# Khal.js is kept Qt-free and the bin/ helpers shell out through a stub, so
+# both can be checked here rather than by opening the panel and looking.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 node test/khal-test.js "$PWD/Khal.js"
+./test/bin-test.sh

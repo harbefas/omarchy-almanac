@@ -1,0 +1,18 @@
+[general]
+status_path = "~/.local/share/vdirsyncer/status/"
+
+# ── Feriados ─────────────────────────────────────────────────────────────────
+
+[pair holidays_pair]
+a = "holidays_local"
+b = "holidays_remote"
+collections = null
+
+[storage holidays_local]
+type = "filesystem"
+path = "~/.local/share/khal/calendars/holidays/"
+fileext = ".ics"
+
+[storage holidays_remote]
+type = "http"
+url = "https://example.com/holidays.ics"

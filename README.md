@@ -72,16 +72,43 @@ The widget shows the date. Clicking it opens the month.
 | `n` | New event |
 | `e` | Edit the selected event |
 | `d` | Delete the selected event, after a confirmation |
+| `Enter` | Edit, when the cursor is in the day's events |
 | `/` | Search the loaded range |
 | `a` `c` `f` | Agenda, Calendars, Feeds |
 | `?` | Show the shortcut overlay |
 | `Esc` | Close |
+
+Selecting an event shows its detail below the list: the times, the calendar,
+the location, and the description. A description is otherwise unreachable for
+a readonly calendar, which has no edit form to open.
+
+The new-event form takes a repeat rule (`daily`, `weekly`, `monthly`,
+`yearly`). Leaving the time off both ends creates an all-day event. Editing
+does not offer the repeat field: an edit rewrites one VEVENT and has no
+business rewriting a recurrence rule. Deleting a repeating event removes every
+occurrence, since one file holds the whole series, and the confirmation says
+so.
 
 On the Calendars page, `Space` hides a calendar from the agenda. It keeps
 syncing; this is a view filter, not a subscription change.
 
 On the Feeds page, `n` adds a feed, `s` syncs the selected one, `Shift+S`
 syncs every feed, and `d` removes one.
+
+## When something is wrong
+
+A read that fails is not an empty calendar, and the panel does not pretend
+otherwise: it says which dependency is missing, or which config it could not
+read, where the events would have been. `khal`, `jq` and `python3` with
+`icalendar` all have to be installed for the plugin to have anything to show.
+
+## Advertising in feeds
+
+Some publishers staple a promo trailer onto the description of every event
+they publish. The fixtur.es feeds append a "Calendar not up to date?" line and
+a Buy Me a Coffee link, which for a fixture is the entire description, so it
+filled the detail panel on every match. `khal-events` cuts it. The `.ics` on
+disk is untouched and comes back whole on the next sync.
 
 ## How it talks to khal
 
@@ -127,9 +154,13 @@ matches, per calendar:
 ./test/run
 ```
 
-`Khal.js` is deliberately Qt-free so the parsing, sanitising and grouping
-rules can be checked under `node` rather than by opening the panel and
-looking.
+Two suites, neither of which needs a calendar or a running shell:
+
+- `test/khal-test.js` covers `Khal.js`, which is deliberately Qt-free so the
+  parsing, sanitising, grouping and search rules can be checked under `node`.
+- `test/bin-test.sh` runs the helpers against fixture configs with `khal`
+  replaced by a stub, which is what makes the per-day flattening, the promo
+  stripping and the feed round-trip checkable anywhere.
 
 ## License
 
