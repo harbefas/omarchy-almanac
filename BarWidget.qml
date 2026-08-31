@@ -14,6 +14,11 @@ BarWidget {
   id: root
   moduleName: "harbefas.almanac"
 
+  // The popup and the manager panel read the same events off the service
+  // singleton; the bar only forwards it, it never fetches anything itself.
+  readonly property var almanac: bar && bar.shell && typeof bar.shell.serviceFor === "function"
+    ? bar.shell.serviceFor("harbefas.almanac") : null
+
   property date displayDate: clock.date
 
   readonly property string configuredFormat: vertical
@@ -101,12 +106,14 @@ BarWidget {
     if ("settings" in target) target.settings = root.settings
     if ("anchorItem" in target) target.anchorItem = button
     if ("hostWidget" in target) target.hostWidget = root
+    if ("service" in target) target.service = root.almanac
   }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
   onBarChanged: injectPanel()
+  onAlmanacChanged: injectPanel()
   onSettingsChanged: injectPanel()
 
   SystemClock {

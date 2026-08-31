@@ -1,6 +1,5 @@
 import QtQuick
 import Quickshell
-import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -77,7 +76,10 @@ Panel {
   //      same "yyyy-MM-dd" string monthGrid() already puts on every cell.
   property date selectedDate: today
   readonly property string selectedKey: Model.keyForDate(selectedDate)
-  property var events: ({})
+  // The events themselves live on the service singleton, shared with the
+  // manager panel: this popup only decides which range is on screen.
+  property var service: null
+  readonly property var events: service ? service.eventsByDay : ({})
   readonly property var selectedEvents: root.events[root.selectedKey] || []
 
   function selectDate(d) {
@@ -94,39 +96,20 @@ Panel {
     root.selectDate(d)
   }
 
-  function applyEvents(text) {
-    var list
-    try { list = JSON.parse(text) } catch (e) { list = [] }
-    var map = {}
-    for (var i = 0; i < list.length; i++) {
-      var item = list[i]
-      if (!map[item.date]) map[item.date] = []
-      map[item.date].push({ time: item.time, title: item.title })
-    }
-    root.events = map
-  }
-
-  // Resolved against this file rather than a fixed install path, so the
-  // plugin keeps working whether it is installed, symlinked from a checkout,
-  // or renamed.
-  function helper(name) {
-    return String(Qt.resolvedUrl("bin/" + name)).replace("file://", "")
-  }
-
   function refreshEvents() {
-    var first = root.weeks[0].days[0].key
-    var last = root.weeks[root.weeks.length - 1].days[6].key
-    eventsProc.command = [root.helper("khal-events"), first, last]
-    eventsProc.running = true
+    if (!root.service) return
+    root.service.setRange(root.weeks[0].days[0].key,
+      root.weeks[root.weeks.length - 1].days[6].key)
+  }
+
+  function openManager() {
+    if (!root.service) return
+    root.close()
+    root.service.call("summon", "harbefas.almanac")
   }
 
   onWeeksChanged: root.refreshEvents()
-
-  Process {
-    id: eventsProc
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyEvents(text) }
-  }
-
+  onServiceChanged: root.refreshEvents()
 
   // Guarded so the widget renders before the bar is injected (the bar-widget
   // contract instantiates it bare).

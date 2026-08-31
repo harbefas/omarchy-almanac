@@ -6,10 +6,14 @@
   "author": "harbefas",
   "description": "Calendar, agenda and event manager backed by khal.",
   "kinds": [
-    "bar-widget"
+    "service",
+    "bar-widget",
+    "panel"
   ],
   "entryPoints": {
-    "barWidget": "BarWidget.qml"
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml",
+    "panel": "ManagerPanel.qml"
   },
   "barWidget": {
     "displayName": "Almanac",
