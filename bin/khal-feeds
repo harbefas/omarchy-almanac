@@ -157,13 +157,24 @@ url = "{args.url}"
 
 def cmd_remove(args):
     name = args.name
+    # Where the already-synced copy is left. Removing a feed unregisters it
+    # from both configs but does not delete the events: `path` comes from a
+    # config the user owns and can point anywhere, so a one-keystroke
+    # recursive delete is not a trade worth making. The caller is told where
+    # the leftovers are instead.
+    orphaned = ""
+    for feed in feeds():
+        if feed["name"] == f"{name}_pair":
+            orphaned = feed["path"]
+            break
+
     drop_sections(
         VDIRSYNCER,
         lambda section: section
         in (f"pair {name}_pair", f"storage {name}_local", f"storage {name}_remote"),
     )
     drop_sections(KHAL, lambda section: section == name)
-    print(json.dumps({"ok": True, "removed": name}))
+    print(json.dumps({"ok": True, "removed": name, "orphaned": orphaned}))
 
 
 def cmd_sync(args):

@@ -106,6 +106,11 @@ Adding a feed writes both configs, the `vdirsyncer` pair and the `khal`
 calendar, because either one alone leaves `khal` pointing at a directory
 nothing syncs. Both are edited as text so their comments survive.
 
+Removing a feed unregisters it from both configs but leaves the events it
+already downloaded on disk. `path` in those configs is yours to set and can
+point anywhere, so removal does not recurse into it; the result says where the
+leftovers are.
+
 ## Filtering noisy feeds
 
 Some feeds are far too busy to read: a league feed can be fifteen events a

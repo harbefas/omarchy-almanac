@@ -56,6 +56,9 @@ Item {
   property string view: "agenda"
   property string focusRegion: "grid"
   property string formMode: ""
+  onFormModeChanged: if (formMode === "") Qt.callLater(function() {
+    keyScope.forceActiveFocus()
+  })
   property string pendingDelete: ""
   property string status: ""
 
@@ -268,6 +271,10 @@ Item {
     return Math.max(0, Math.min(list.length - 1, index + delta))
   }
 
+  onCalendarIndexChanged: calendarList.positionViewAtIndex(calendarIndex, ListView.Contain)
+  onFeedIndexChanged: feedList.positionViewAtIndex(feedIndex, ListView.Contain)
+  onListIndexChanged: agendaList.positionViewAtIndex(listIndex, ListView.Contain)
+
   function startEdit() {
     if (!selectedEvent) return note("Nothing selected")
     if (!selectedEditable)
@@ -311,7 +318,7 @@ Item {
     if (form.title.trim() === "") return note("Title is required")
     if (formMode === "new")
       service.createEvent(form.calendar, form.start, form.end, form.title,
-        form.location, form.description, "")
+        form.location, form.description, form.repeat.trim())
     else if (formMode === "edit")
       service.updateEvent(form.uid, {
         title: form.title, start: form.start, end: form.end,
@@ -368,6 +375,7 @@ Item {
         submitForm()
         return true
       }
+      // Everything else belongs to the field that has focus, Tab included.
       return false
     }
 
@@ -487,6 +495,7 @@ Item {
     property string end: ""
     property string location: ""
     property string description: ""
+    property string repeat: ""
     property string feedName: ""
     property string feedUrl: ""
 
@@ -498,6 +507,7 @@ Item {
       end = dayKey + "T10:00"
       location = ""
       description = ""
+      repeat = ""
     }
 
     function load(event) {
@@ -1036,44 +1046,68 @@ Item {
             font.pixelSize: Style.font.caption
           }
 
+          // Tab walks the fields explicitly. QML gives a bare column of
+          // TextFields no tab order, so without this the form could only be
+          // filled with the mouse.
           TextField {
             id: titleField
             width: parent.width
             placeholderText: "Title"
             text: form.title
             onTextChanged: form.title = text
+            KeyNavigation.tab: startField
           }
 
           TextField {
+            id: startField
             width: parent.width
-            placeholderText: "Start — yyyy-mm-dd or yyyy-mm-ddTHH:MM"
+            // Dropping the time makes it an all-day event, which is what khal
+            // does with a bare date on both ends.
+            placeholderText: "Start — yyyy-mm-dd, or yyyy-mm-ddTHH:MM"
             text: form.start
             onTextChanged: form.start = text
+            KeyNavigation.tab: endField
           }
 
           TextField {
+            id: endField
             width: parent.width
             placeholderText: "End"
             text: form.end
             onTextChanged: form.end = text
+            KeyNavigation.tab: locationField
           }
 
           TextField {
+            id: locationField
             width: parent.width
             placeholderText: "Location"
             text: form.location
             onTextChanged: form.location = text
+            KeyNavigation.tab: descriptionField
           }
 
           TextField {
+            id: descriptionField
             width: parent.width
             placeholderText: "Description"
             text: form.description
             onTextChanged: form.description = text
+            KeyNavigation.tab: repeatField
+          }
+
+          TextField {
+            id: repeatField
+            width: parent.width
+            visible: root.formMode === "new"
+            placeholderText: "Repeat — daily, weekly, monthly, yearly"
+            text: form.repeat
+            onTextChanged: form.repeat = text
+            KeyNavigation.tab: titleField
           }
 
           Text {
-            text: "Ctrl+Enter  save     Esc  cancel"
+            text: "Tab  next field     Ctrl+Enter  save     Esc  cancel"
             color: root.secondary
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -1115,17 +1149,20 @@ Item {
             placeholderText: "Calendar name — e.g. sports_f1"
             text: form.feedName
             onTextChanged: form.feedName = text
+            KeyNavigation.tab: feedUrlField
           }
 
           TextField {
+            id: feedUrlField
             width: parent.width
             placeholderText: "https://…/calendar.ics"
             text: form.feedUrl
             onTextChanged: form.feedUrl = text
+            KeyNavigation.tab: feedNameField
           }
 
           Text {
-            text: "Ctrl+Enter  add     Esc  cancel"
+            text: "Tab  next field     Ctrl+Enter  add     Esc  cancel"
             color: root.secondary
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -1157,7 +1194,7 @@ Item {
 
           Text {
             text: root.pendingDelete.indexOf("feed:") === 0
-              ? "The synced events go with it. The .ics source is untouched."
+              ? "It stops syncing. The events already downloaded stay on disk."
               : "The .ics file is removed. This cannot be undone."
             color: root.secondary
             font.family: Style.font.family
