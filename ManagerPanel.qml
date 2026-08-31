@@ -60,6 +60,10 @@ Item {
     keyScope.forceActiveFocus()
   })
   property string pendingDelete: ""
+
+  // Held rather than read off selectedEvent: the form outlives the selection
+  // when the list refreshes underneath it.
+  property bool editingRepeat: false
   property string status: ""
 
   property date today: new Date()
@@ -140,6 +144,18 @@ Item {
   }
   readonly property var selectedEvent: listIndex >= 0 && listIndex < dayEvents.length
     ? dayEvents[listIndex] : null
+
+  // Coarse on purpose: the point is "today" versus "months ago", and an
+  // exact timestamp reads as more precision than a directory mtime carries.
+  function ago(epochSeconds) {
+    if (!epochSeconds) return "never"
+    var days = Math.floor((Date.now() / 1000 - epochSeconds) / 86400)
+    if (days <= 0) return "today"
+    if (days === 1) return "yesterday"
+    if (days < 30) return days + " days ago"
+    var months = Math.round(days / 30)
+    return months === 1 ? "a month ago" : months + " months ago"
+  }
 
   function calendarNamed(name) {
     for (var i = 0; i < calendars.length; i++)
@@ -281,6 +297,7 @@ Item {
     if (!selectedEditable)
       return note("'" + selectedEvent.calendar + "' is readonly")
     form.load(selectedEvent)
+    editingRepeat = selectedEvent.repeats === true
     formMode = "edit"
   }
 
@@ -288,6 +305,7 @@ Item {
     var calendar = service ? service.calendarForNewEvents() : ""
     if (calendar === "") return note("No writable calendar")
     form.reset(calendar, selectedKey)
+    editingRepeat = false
     formMode = "new"
   }
 
@@ -323,7 +341,8 @@ Item {
     else if (formMode === "edit")
       service.updateEvent(form.uid, {
         title: form.title, start: form.start, end: form.end,
-        location: form.location, description: form.description
+        location: form.location, description: form.description,
+        calendar: form.calendar.trim()
       })
   }
 
@@ -1064,7 +1083,7 @@ Item {
               required property var modelData
               required property int index
               width: feedList.width
-              height: Style.space(40)
+              height: Style.space(52)
               color: index === root.feedIndex
                 ? Util.alpha(root.foreground, 0.10) : "transparent"
 
@@ -1094,6 +1113,19 @@ Item {
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                   elide: Text.ElideMiddle
+                }
+
+                Text {
+                  width: parent.width
+                  // Two different questions: whether the sync is running at
+                  // all, and whether the publisher is still saying anything.
+                  // A dead feed syncs happily forever.
+                  text: "synced " + root.ago(modelData.synced)
+                    + "  ·  changed " + root.ago(modelData.changed)
+                  textFormat: Text.PlainText
+                  color: root.secondary
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
                 }
               }
 
@@ -1138,11 +1170,16 @@ Item {
           }
 
           Text {
-            text: form.calendar
-            textFormat: Text.PlainText
-            color: root.secondary
+            // Deleting a repeating event already warned that it takes the
+            // series; an edit rewrites the same one file, so it changes every
+            // occurrence too. Saying one and not the other was misleading.
+            visible: root.formMode === "edit" && root.editingRepeat
+            width: parent.width
+            text: "This event repeats. The change applies to every occurrence."
+            color: root.accent
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
 
           // Tab walks the fields explicitly. QML gives a bare column of
@@ -1192,6 +1229,18 @@ Item {
             placeholderText: "Description"
             text: form.description
             onTextChanged: form.description = text
+            KeyNavigation.tab: calendarField
+          }
+
+          // Filesystem calendars are directories, so changing this moves the
+          // file. The helper refuses an unknown or readonly target rather
+          // than this field trying to police it.
+          TextField {
+            id: calendarField
+            width: parent.width
+            placeholderText: "Calendar"
+            text: form.calendar
+            onTextChanged: form.calendar = text
             KeyNavigation.tab: repeatField
           }
 

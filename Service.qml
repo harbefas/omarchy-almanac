@@ -198,7 +198,7 @@ Item {
 
   function updateEvent(uid, fields) {
     var args = [helper("khal-event-edit"), uid]
-    var names = ["title", "start", "end", "location", "description"]
+    var names = ["title", "start", "end", "location", "description", "calendar"]
     for (var i = 0; i < names.length; i++) {
       var value = fields[names[i]]
       if (value !== undefined && value !== null)

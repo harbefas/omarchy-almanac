@@ -57,8 +57,34 @@ def parse(path):
     return sections
 
 
+def status_dir():
+    """Where vdirsyncer records what it last synced, per [general]."""
+    for name, values, _ in parse(VDIRSYNCER):
+        if name == "general":
+            return Path(os.path.expanduser(values.get("status_path", ""))) \
+                if values.get("status_path") else None
+    return None
+
+
+def mtime(path):
+    try:
+        return int(Path(path).stat().st_mtime)
+    except OSError:
+        return 0
+
+
+def last_synced(status, pair):
+    """When vdirsyncer last ran this pair, or 0 if it never has.
+
+    The .items file is rewritten on every sync whether or not anything came
+    back, so this answers "is the sync running" and nothing more.
+    """
+    return mtime(status / f"{pair}.items") if status is not None else 0
+
+
 def feeds():
     sections = parse(VDIRSYNCER)
+    status = status_dir()
     storages = {
         name.split(None, 1)[1]: values
         for name, values, _ in sections
@@ -72,12 +98,19 @@ def feeds():
         remote = storages.get(values.get("b", ""), {})
         if remote.get("type") != "http":
             continue
+        pair = name.split(None, 1)[1]
         out.append(
             {
-                "name": name.split(None, 1)[1],
+                "name": pair,
                 "url": remote.get("url", ""),
                 "path": os.path.expanduser(local.get("path", "")),
                 "calendar": Path(local.get("path", "").rstrip("/")).name,
+                "synced": last_synced(status, pair),
+                # When the events themselves last changed. A feed whose
+                # upstream went quiet keeps syncing happily, so this is the
+                # one that tells them apart — at the cost of looking stale
+                # for a calendar that genuinely has no news.
+                "changed": mtime(os.path.expanduser(local.get("path", ""))),
             }
         )
     return out

@@ -82,6 +82,10 @@ Selecting an event shows its detail below the list: the times, the calendar,
 the location, and the description. A description is otherwise unreachable for
 a readonly calendar, which has no edit form to open.
 
+The form's calendar field moves the event: filesystem calendars are
+directories, so changing it moves the file and the event keeps its UID. A
+readonly or unknown target is refused.
+
 The new-event form takes a repeat rule (`daily`, `weekly`, `monthly`,
 `yearly`). Leaving the time off both ends creates an all-day event. Editing
 does not offer the repeat field: an edit rewrites one VEVENT and has no
@@ -122,6 +126,11 @@ exercised from a terminal without opening the panel:
 | `khal-event-new` | Create an event, refusing readonly calendars |
 | `khal-event-edit` | Edit or delete an event by UID |
 | `khal-feeds` | List, add, remove and sync `.ics` feeds |
+
+The feed list carries two timestamps, because they answer different
+questions: `synced` is when vdirsyncer last ran the pair, and `changed` is
+when the events themselves last moved. A feed whose publisher went quiet
+keeps syncing happily forever, so only the second one tells them apart.
 
 Creation goes through `khal new`. Editing and deletion do not: `khal edit` is
 interactive-only, with no flag for either, so they act on the `.ics` file

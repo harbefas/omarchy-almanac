@@ -10,9 +10,13 @@ The file is located by reading UIDs rather than trusting the filename:
 vdirsyncer and `khal new` both name files after the UID, but nothing in the
 format requires it.
 
+Moving an event between calendars is a file move: filesystem calendars are
+directories, so the event keeps its UID and its contents and changes which
+directory holds it.
+
 Usage:
   khal-event-edit <uid> --title T [--start ISO] [--end ISO]
-                        [--location L] [--description D]
+                        [--location L] [--description D] [--calendar NAME]
   khal-event-edit <uid> --delete
 """
 
@@ -69,6 +73,7 @@ def main():
     parser.add_argument("--end")
     parser.add_argument("--location")
     parser.add_argument("--description")
+    parser.add_argument("--calendar", help="move the event to this calendar")
     args = parser.parse_args()
 
     cal, path, cal_obj, event = find_event(args.uid)
@@ -98,12 +103,32 @@ def main():
         event.pop(name, None)
         event.add(name, parse_when(value))
 
-    # Written through a temp file in the same directory so a crash mid-write
-    # cannot leave khal indexing a truncated event.
-    tmp = path.with_suffix(".ics.tmp")
+    target = path
+    moved_to = cal["name"]
+
+    if args.calendar and args.calendar != cal["name"]:
+        destination = next(
+            (c for c in calendars() if c["name"] == args.calendar), None
+        )
+        if destination is None:
+            sys.exit(f"no calendar named {args.calendar!r}")
+        if destination["readonly"]:
+            sys.exit(f"calendar {args.calendar!r} is readonly")
+        target = Path(os.path.expanduser(destination["path"])) / path.name
+        if target.exists():
+            sys.exit(f"{target.name} already exists in {args.calendar!r}")
+        moved_to = destination["name"]
+
+    # Written through a temp file beside the destination so a crash mid-write
+    # cannot leave khal indexing a truncated event, and so a move never has
+    # the event in two places at once.
+    tmp = target.with_suffix(".ics.tmp")
     tmp.write_bytes(cal_obj.to_ical())
-    tmp.replace(path)
-    print(json.dumps({"ok": True, "uid": args.uid, "calendar": cal["name"]}))
+    tmp.replace(target)
+    if target != path:
+        path.unlink()
+
+    print(json.dumps({"ok": True, "uid": args.uid, "calendar": moved_to}))
 
 
 if __name__ == "__main__":

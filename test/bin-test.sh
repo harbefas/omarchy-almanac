@@ -74,15 +74,106 @@ rm "$work/stub/khal"
 PATH="$work/stub" "$root/bin/khal-events" 2026-08-31 2026-09-01 >/dev/null 2>&1
 check "a missing khal is an error, not an empty day" '127' "$?"
 
+# ---- khal-event-edit: moving between calendars is a file move
+#
+# No stub needed here: the helper reads the config and manipulates .ics files
+# itself, because khal edit is interactive-only and has no flag for either.
+
+mkdir -p "$work/cal/work" "$work/cal/archive" "$work/cal/locked"
+cat >"$work/edit-config" <<CONFIG
+[calendars]
+
+[[work]]
+path = $work/cal/work/
+color = light green
+
+[[archive]]
+path = $work/cal/archive/
+color = light blue
+
+[[locked]]
+path = $work/cal/locked/
+color = dark red
+readonly = True
+
+[sqlite]
+path = $work/khal.db
+CONFIG
+
+cat >"$work/cal/work/probe.ics" <<'ICS'
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:probe-1
+SUMMARY:Original
+DTSTART;VALUE=DATE:20260920
+DTEND;VALUE=DATE:20260921
+END:VEVENT
+END:VCALENDAR
+ICS
+
+export KHAL_CONFIG="$work/edit-config"
+
+"$root/bin/khal-event-edit" probe-1 --title Renamed >/dev/null
+check "an edit rewrites the summary" '1' \
+  "$(grep -c '^SUMMARY:Renamed' "$work/cal/work/probe.ics")"
+
+"$root/bin/khal-event-edit" probe-1 --calendar archive >/dev/null
+check "a move leaves the source calendar" '0' "$(find "$work/cal/work" -type f | wc -l)"
+check "a move lands in the target calendar" '1' "$(find "$work/cal/archive" -type f | wc -l)"
+check "a move keeps the uid" '1' \
+  "$(grep -c '^UID:probe-1' "$work/cal/archive/probe.ics")"
+check "no temp file is left behind" '0' \
+  "$(find "$work/cal" -name '*.tmp' | wc -l)"
+
+"$root/bin/khal-event-edit" probe-1 --calendar locked >/dev/null 2>&1
+check "a readonly target is refused" '1' "$?"
+check "the refused move changed nothing" '1' "$(find "$work/cal/archive" -type f | wc -l)"
+
+"$root/bin/khal-event-edit" probe-1 --calendar nowhere >/dev/null 2>&1
+check "an unknown target is refused" '1' "$?"
+
+"$root/bin/khal-event-edit" probe-1 --delete >/dev/null
+check "a delete removes the file" '0' "$(find "$work/cal/archive" -type f | wc -l)"
+
+"$root/bin/khal-event-edit" probe-1 --delete >/dev/null 2>&1
+check "a uid that is gone is refused" '1' "$?"
+
+unset KHAL_CONFIG
+
 # ---- khal-feeds
 
+# The fixture points at $HOME by default, which made the timestamp checks
+# read this machine's real vdirsyncer state. Redirect both into the sandbox.
+sed "s|~/.local/share/vdirsyncer/status/|$work/status/|; \
+     s|~/.local/share/khal/calendars/|$work/calendars/|" \
+  "$here/fixtures/vdirsyncer-config" >"$work/vdirsyncer-config"
 cp "$here/fixtures/khal-config" "$work/khal-config"
-cp "$here/fixtures/vdirsyncer-config" "$work/vdirsyncer-config"
 export KHAL_CONFIG="$work/khal-config" VDIRSYNCER_CONFIG="$work/vdirsyncer-config"
+
+# The round-trip is checked against these, not the fixtures, since the paths
+# above were rewritten into the sandbox.
+cp "$work/vdirsyncer-config" "$work/vdirsyncer-config.pristine"
+cp "$work/khal-config" "$work/khal-config.pristine"
 
 out=$("$root/bin/khal-feeds" list)
 check "http pairs are listed as feeds" '["holidays_pair"]' "$(jq -c 'map(.name)' <<<"$out")"
 check "the local storage names the calendar" '"holidays"' "$(jq -c '.[0].calendar' <<<"$out")"
+# Two different questions, so two different fields: whether the sync ran, and
+# whether the publisher said anything. A dead feed syncs happily forever.
+# Two different questions, so two different fields: whether the sync ran, and
+# whether the publisher said anything. A dead feed syncs happily forever.
+check "a pair that never synced reports zero" '0' "$(jq -c '.[0].synced' <<<"$out")"
+check "a calendar with no directory reports zero" '0' "$(jq -c '.[0].changed' <<<"$out")"
+
+mkdir -p "$work/status" "$work/calendars/holidays"
+touch -d "2026-08-31 07:48" "$work/status/holidays_pair.items"
+touch -d "2026-06-19 03:00" "$work/calendars/holidays"
+out=$("$root/bin/khal-feeds" list)
+check "synced is the pair status file" "$(date -d '2026-08-31 07:48' +%s)" \
+  "$(jq -c '.[0].synced' <<<"$out")"
+check "changed is the calendar directory" "$(date -d '2026-06-19 03:00' +%s)" \
+  "$(jq -c '.[0].changed' <<<"$out")"
 
 "$root/bin/khal-feeds" add sports_f1 "https://example.com/f1.ics" >/dev/null
 check "adding a feed registers it" '2' "$("$root/bin/khal-feeds" list | jq -c 'length')"
@@ -94,12 +185,13 @@ check "a duplicate feed is refused" '1' "$?"
 
 "$root/bin/khal-feeds" remove sports_f1 >/dev/null
 check "removing restores the vdirsyncer config byte for byte" '' \
-  "$(diff "$here/fixtures/vdirsyncer-config" "$work/vdirsyncer-config")"
+  "$(diff "$work/vdirsyncer-config.pristine" "$work/vdirsyncer-config")"
 check "removing restores the khal config byte for byte" '' \
-  "$(diff "$here/fixtures/khal-config" "$work/khal-config")"
+  "$(diff "$work/khal-config.pristine" "$work/khal-config")"
 
-# The feed's own directory is deliberately left behind, so nothing here
-# should have deleted it.
+# khal-feeds add always creates the directory under the real XDG data dir,
+# so this one is the test's to clean up. Removing a feed deliberately leaves
+# a directory behind, which is why it is still here.
 rmdir "$HOME/.local/share/khal/calendars/sports_f1" 2>/dev/null
 
 if [ "$failures" -gt 0 ]; then
