@@ -74,6 +74,18 @@ Item {
   property bool shortcutHintsActive: false
   property int heldModifierFlags: 0
 
+  readonly property bool hintCtrlHeld: (heldModifierFlags & Qt.ControlModifier) !== 0
+  readonly property bool hintShiftHeld: (heldModifierFlags & Qt.ShiftModifier) !== 0
+  readonly property bool hintAltHeld: (heldModifierFlags & Qt.AltModifier) !== 0
+
+  component KeyHint: ShortcutHint {
+    ctrlHeld: root.hintCtrlHeld
+    shiftHeld: root.hintShiftHeld
+    altHeld: root.hintAltHeld
+    active: root.shortcutHintsActive
+    foreground: root.foreground
+  }
+
   readonly property color foreground: Color.foreground
   readonly property color secondary: Util.alpha(foreground, 0.55)
   readonly property color accent: Color.accent
@@ -103,7 +115,7 @@ Item {
     if (focusRegion === "list")
       return "j k  ↓ ↑     Enter  edit     d  delete     Tab  calendar     /  search"
     return "h l  ← →     j k  ↓ ↑     [ ]  month     t  today"
-      + "     Tab  events     n  new     /  search"
+      + "     Tab  events     n  new     ?  keys"
   }
 
   function visibleEvents(list) {
@@ -322,7 +334,7 @@ Item {
   // shortcut table is skipped while an input has focus. Escape still gets
   // through — it is the way back out.
   function textInputFocused() {
-    var item = window.activeFocusItem
+    var item = panel.activeFocusItem
     return !!item && (item.hasOwnProperty("inputMethodComposing")
       || String(item.toString()).indexOf("TextField") >= 0
       || String(item.toString()).indexOf("TextInput") >= 0
@@ -334,7 +346,8 @@ Item {
     var plain = event.modifiers === Qt.NoModifier
 
     if (event.key === Qt.Key_Escape) {
-      if (pendingDelete !== "") pendingDelete = ""
+      if (shortcutHintsActive) shortcutHintsActive = false
+      else if (pendingDelete !== "") pendingDelete = ""
       else if (formMode !== "") formMode = ""
       else if (query !== "") { query = ""; focusRegion = "grid" }
       else close()
@@ -361,6 +374,10 @@ Item {
     if (textInputFocused()) return false
 
     // ---- view switching, live everywhere
+    if (text === "?") {
+      shortcutHintsActive = !shortcutHintsActive
+      return true
+    }
     if (plain && text === "a") { view = "agenda"; return true }
     if (plain && text === "c") { view = "calendars"; return true }
     if (plain && text === "f") { view = "feeds"; return true }
@@ -548,16 +565,12 @@ Item {
 
       Keys.onPressed: function(event) {
         root.noteHeldModifiers(event)
-        if (root.isModifierKey(event.key)) {
-          root.shortcutHintsActive = true
-          return
-        }
+        if (root.isModifierKey(event.key)) return
         if (root.handleKey(event)) event.accepted = true
       }
 
       Keys.onReleased: function(event) {
         root.noteHeldModifiers(event)
-        if (root.isModifierKey(event.key)) root.shortcutHintsActive = false
       }
 
       Column {
@@ -586,9 +599,9 @@ Item {
 
             Repeater {
               model: [
-                { key: "agenda", label: "Agenda  a" },
-                { key: "calendars", label: "Calendars  c" },
-                { key: "feeds", label: "Feeds  f" }
+                { key: "agenda", label: "Agenda", hint: "a" },
+                { key: "calendars", label: "Calendars", hint: "c" },
+                { key: "feeds", label: "Feeds", hint: "f" }
               ]
 
               Text {
@@ -598,6 +611,10 @@ Item {
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
                 font.bold: root.view === modelData.key
+
+                KeyHint {
+                  sequences: [modelData.hint]
+                }
 
                 MouseArea {
                   anchors.fill: parent
@@ -661,6 +678,11 @@ Item {
                   color: root.secondary
                   font.family: Style.font.family
                   font.pixelSize: Style.font.body
+
+                  KeyHint {
+                    sequences: [modelData.step < 0 ? "[" : "]"]
+                    showWash: false
+                  }
 
                   MouseArea {
                     anchors.fill: parent
@@ -779,6 +801,8 @@ Item {
                 root.focusRegion = "grid"
                 keyScope.forceActiveFocus()
               }
+
+              KeyHint { sequences: ["/"] }
             }
 
             Text {
@@ -824,6 +848,12 @@ Item {
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
               }
+
+              KeyHint {
+                navHint: root.focusRegion === "list" ? "j k" : ""
+                sequences: root.focusRegion === "list"
+                  ? ["Enter", "d"] : ["Tab", "n"]
+              }
             }
 
           }
@@ -850,6 +880,11 @@ Item {
             clip: true
             model: root.calendars
             currentIndex: root.calendarIndex
+
+            KeyHint {
+              navHint: "j k"
+              sequences: ["Space"]
+            }
 
             delegate: Rectangle {
               required property var modelData
@@ -910,6 +945,11 @@ Item {
             clip: true
             model: root.feeds
             currentIndex: root.feedIndex
+
+            KeyHint {
+              navHint: "j k"
+              sequences: ["n", "s", "d"]
+            }
 
             delegate: Rectangle {
               required property var modelData
