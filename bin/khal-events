@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Args: start end, both ISO (yyyy-mm-dd). Emits a JSON array of
+# {date, time, end, title, calendar, uid, location, description} for that range.
+#
+# Title filters live in $HOME/.config/omarchy/khal-filters.json as
+# {"<calendar>": "<regex>"} — an entry keeps only the events whose title
+# matches. The MLB feed is ~15 games a day, so without one the agenda is
+# nothing but baseball.
+
+set -euo pipefail
+
+filters="${KHAL_FILTERS:-$HOME/.config/omarchy/khal-filters.json}"
+
+to_khal() {
+  IFS='-' read -r y m d <<<"$1"
+  printf '%02d/%02d/%04d' "$((10#$d))" "$((10#$m))" "$((10#$y))"
+}
+
+start_khal=$(to_khal "$1")
+end_khal=$(to_khal "$2")
+
+fields=(--json start-date --json start-time --json end-date --json end-time
+  --json title --json calendar --json uid --json location --json description)
+
+# khal list prints one JSON array per day in the range, so the output is a
+# stream of arrays rather than one document: -s/add flattens it.
+khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null |
+  jq -c -s --slurpfile f <(cat "$filters" 2>/dev/null || echo '{}') '
+    ($f[0] // {}) as $filters
+    | (add // [])
+    | map(select(
+        ($filters[.calendar] // "") as $re
+        | $re == "" or (.title | test($re))
+      ))
+    | map({
+        date: (.["start-date"] | split("/") | .[2] + "-" + .[1] + "-" + .[0]),
+        time: .["start-time"],
+        endDate: (.["end-date"] | split("/") | .[2] + "-" + .[1] + "-" + .[0]),
+        endTime: .["end-time"],
+        title: .title,
+        calendar: .calendar,
+        uid: .uid,
+        location: .location,
+        description: .description
+      })
+    | unique
+    | sort_by(.date, .time)
+  '

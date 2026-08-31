@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Emits a JSON array of {name, color, readonly, path} for every calendar in
+# khal's config. khal printcalendars gives the names but drops `readonly`,
+# which the UI needs to know before it offers to create or delete anything.
+
+set -euo pipefail
+
+config="${KHAL_CONFIG:-$HOME/.config/khal/config}"
+
+[ -r "$config" ] || {
+  echo '[]'
+  exit 0
+}
+
+awk '
+  /^[[:space:]]*\[\[[^]]+\]\][[:space:]]*$/ {
+    if (name != "") print name "\t" color "\t" readonly "\t" path
+    name = $0
+    gsub(/^[[:space:]]*\[\[|\]\][[:space:]]*$/, "", name)
+    color = ""; readonly = "false"; path = ""
+    next
+  }
+  /^[[:space:]]*\[[^[]/ {
+    if (name != "") print name "\t" color "\t" readonly "\t" path
+    name = ""
+    next
+  }
+  name != "" && /^[[:space:]]*[a-z_]+[[:space:]]*=/ {
+    key = $0; sub(/[[:space:]]*=.*$/, "", key); gsub(/[[:space:]]/, "", key)
+    val = $0; sub(/^[^=]*=[[:space:]]*/, "", val); sub(/[[:space:]]*$/, "", val)
+    if (key == "color") color = val
+    else if (key == "path") path = val
+    else if (key == "readonly") readonly = (tolower(val) == "true") ? "true" : "false"
+  }
+  END { if (name != "") print name "\t" color "\t" readonly "\t" path }
+' "$config" |
+  jq -R -s --arg home "$HOME" '
+    split("\n")
+    | map(select(length > 0) | split("\t"))
+    | map({
+        name: .[0],
+        color: .[1],
+        readonly: (.[2] == "true"),
+        path: (.[3] | sub("^~"; $home))
+      })
+  '

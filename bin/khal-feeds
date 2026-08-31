@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""List, add, remove and sync the .ics feeds behind khal's calendars.
+
+A feed is one vdirsyncer `pair` whose remote is an http storage, writing into
+a filesystem storage that khal reads as a calendar. Adding one therefore has
+to touch two configs — vdirsyncer's (the pair and its two storages) and
+khal's (the calendar entry) — and removing one has to undo both, or khal ends
+up pointing at a directory nothing syncs.
+
+Both files are edited as text rather than reparsed and rewritten: they are
+hand-maintained and full of comments, and a round-trip through a parser would
+throw those away. vdirsyncer's format is ini-like but not TOML (`[pair x]`
+has a space in the table name), so there is no stdlib parser for it anyway.
+
+Usage:
+  khal-feeds list
+  khal-feeds add <name> <url> [--color COLOR]
+  khal-feeds remove <name>
+  khal-feeds sync [name]
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+VDIRSYNCER = Path(
+    os.environ.get("VDIRSYNCER_CONFIG", "~/.config/vdirsyncer/config")
+).expanduser()
+KHAL = Path(os.environ.get("KHAL_CONFIG", "~/.config/khal/config")).expanduser()
+
+# Matches both vdirsyncer's `[pair x]` and khal's nested `[[calendar]]`,
+# reporting the inner name either way.
+SECTION = re.compile(r"^\[+([^\[\]]+)\]+\s*$")
+SETTING = re.compile(r"^([a-z_]+)\s*=\s*(.*)$")
+
+
+def parse(path):
+    """[(section-name, {key: value}, [line numbers]) …] in file order."""
+    sections = []
+    if not path.is_file():
+        return sections
+    for number, line in enumerate(path.read_text().splitlines()):
+        match = SECTION.match(line.strip())
+        if match:
+            sections.append([match.group(1), {}, [number]])
+            continue
+        if not sections:
+            continue
+        sections[-1][2].append(number)
+        setting = SETTING.match(line.strip())
+        if setting:
+            sections[-1][1][setting.group(1)] = setting.group(2).strip().strip('"')
+    return sections
+
+
+def feeds():
+    sections = parse(VDIRSYNCER)
+    storages = {
+        name.split(None, 1)[1]: values
+        for name, values, _ in sections
+        if name.startswith("storage ")
+    }
+    out = []
+    for name, values, _ in sections:
+        if not name.startswith("pair "):
+            continue
+        local = storages.get(values.get("a", ""), {})
+        remote = storages.get(values.get("b", ""), {})
+        if remote.get("type") != "http":
+            continue
+        out.append(
+            {
+                "name": name.split(None, 1)[1],
+                "url": remote.get("url", ""),
+                "path": os.path.expanduser(local.get("path", "")),
+                "calendar": Path(local.get("path", "").rstrip("/")).name,
+            }
+        )
+    return out
+
+
+def drop_sections(path, predicate):
+    """Rewrite path without the sections predicate(name) selects."""
+    lines = path.read_text().splitlines()
+    doomed = set()
+    for name, _, numbers in parse(path):
+        if predicate(name):
+            doomed.update(numbers)
+            # The blank line that separated this section from the one above
+            # goes with it, or removing a feed leaves a widening gap behind.
+            above = numbers[0] - 1
+            if above >= 0 and lines[above].strip() == "":
+                doomed.add(above)
+    kept = [line for number, line in enumerate(lines) if number not in doomed]
+    path.write_text("\n".join(kept).rstrip("\n") + "\n")
+
+
+def cmd_list(_args):
+    print(json.dumps(feeds(), ensure_ascii=False))
+
+
+def cmd_add(args):
+    name = args.name
+    if any(feed["name"] == f"{name}_pair" for feed in feeds()):
+        sys.exit(f"feed {name!r} already exists")
+
+    path = Path(f"~/.local/share/khal/calendars/{name}/").expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+
+    with VDIRSYNCER.open("a") as handle:
+        handle.write(
+            f"""
+[pair {name}_pair]
+a = "{name}_local"
+b = "{name}_remote"
+collections = null
+conflict_resolution = "b wins"
+
+[storage {name}_local]
+type = "filesystem"
+path = "~/.local/share/khal/calendars/{name}/"
+fileext = ".ics"
+
+[storage {name}_remote]
+type = "http"
+url = "{args.url}"
+"""
+        )
+
+    # The calendar entry goes before khal's first top-level section, since
+    # everything after [sqlite] would be read as a setting of it rather than a
+    # new calendar.
+    lines = KHAL.read_text().splitlines()
+    entry = [
+        "",
+        f"[[{name}]]",
+        f"path = ~/.local/share/khal/calendars/{name}/",
+        f"color = {args.color}",
+        "readonly = True",
+    ]
+    for number, line in enumerate(lines):
+        if line.startswith("[") and not line.startswith("[["):
+            if number == 0:
+                continue
+            lines[number:number] = entry
+            break
+    else:
+        lines.extend(entry)
+    KHAL.write_text("\n".join(lines).rstrip("\n") + "\n")
+
+    print(json.dumps({"ok": True, "added": name, "calendar": name}))
+
+
+def cmd_remove(args):
+    name = args.name
+    drop_sections(
+        VDIRSYNCER,
+        lambda section: section
+        in (f"pair {name}_pair", f"storage {name}_local", f"storage {name}_remote"),
+    )
+    drop_sections(KHAL, lambda section: section == name)
+    print(json.dumps({"ok": True, "removed": name}))
+
+
+def cmd_sync(args):
+    pairs = [f"{args.name}_pair"] if args.name else []
+    subprocess.run(["vdirsyncer", "discover", *pairs], check=False)
+    result = subprocess.run(
+        ["vdirsyncer", "sync", *pairs], capture_output=True, text=True, check=False
+    )
+    print(
+        json.dumps(
+            {
+                "ok": result.returncode == 0,
+                "output": (result.stderr + result.stdout).strip(),
+            }
+        )
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("list").set_defaults(run=cmd_list)
+
+    add = sub.add_parser("add")
+    add.add_argument("name")
+    add.add_argument("url")
+    add.add_argument("--color", default="light blue")
+    add.set_defaults(run=cmd_add)
+
+    remove = sub.add_parser("remove")
+    remove.add_argument("name")
+    remove.set_defaults(run=cmd_remove)
+
+    sync = sub.add_parser("sync")
+    sync.add_argument("name", nargs="?")
+    sync.set_defaults(run=cmd_sync)
+
+    args = parser.parse_args()
+    args.run(args)
+
+
+if __name__ == "__main__":
+    main()
