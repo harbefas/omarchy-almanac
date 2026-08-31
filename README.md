@@ -42,6 +42,20 @@ Then reload the shell:
 omarchy restart shell
 ```
 
+## Removal
+
+```bash
+omarchy plugin remove harbefas.almanac
+```
+
+The bar widget goes with it.
+
+Almanac stores nothing of its own. Your calendars, `khal`'s config and
+vdirsyncer's config are untouched by removal, including any feed added through
+the panel, which stays configured and keeps syncing. Two things are yours to
+undo if you set them up: the optional Hyprland binding above, and
+`~/.config/omarchy/khal-filters.json` if you wrote one.
+
 ## Usage
 
 ### Bar popup
