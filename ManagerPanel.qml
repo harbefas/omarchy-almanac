@@ -536,7 +536,6 @@ Item {
       anchors.centerIn: parent
       color: root.cardBackground
       borderSpec: root.cardBorderSpec
-      padding: root.contentMargin
 
       // Clicks inside the card must not reach the dismissal surface below it.
       MouseArea { anchors.fill: parent; onClicked: {} }
@@ -869,6 +868,7 @@ Item {
                 // A hollow dot reads as "off" where a greyed label would
                 // just read as a different calendar.
                 text: (parent.shown ? "●  " : "○  ") + modelData.name
+                textFormat: Text.PlainText
                 color: parent.shown ? root.foreground : root.secondary
                 font.family: Style.font.family
                 font.pixelSize: Style.font.body
@@ -930,6 +930,7 @@ Item {
                 Text {
                   width: parent.width
                   text: modelData.calendar
+                  textFormat: Text.PlainText
                   color: root.foreground
                   font.family: Style.font.family
                   font.pixelSize: Style.font.body
@@ -939,6 +940,7 @@ Item {
                 Text {
                   width: parent.width
                   text: modelData.url
+                  textFormat: Text.PlainText
                   color: root.secondary
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -988,6 +990,7 @@ Item {
 
           Text {
             text: form.calendar
+            textFormat: Text.PlainText
             color: root.secondary
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -1106,6 +1109,7 @@ Item {
             text: root.pendingDelete.indexOf("feed:") === 0
               ? "Remove feed '" + root.pendingDelete.substring(5) + "'?"
               : "Delete '" + (root.selectedEvent ? root.selectedEvent.title : "") + "'?"
+            textFormat: Text.PlainText
             color: root.foreground
             font.family: Style.font.family
             font.pixelSize: Style.font.body

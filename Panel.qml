@@ -959,6 +959,7 @@ Panel {
                       Text {
                         width: Style.space(46)
                         text: modelData.time !== "" ? modelData.time : "—"
+                        textFormat: Text.PlainText
                         color: Qt.darker(root.contentForeground, 1.5)
                         font.family: root.contentFontFamily
                         font.pixelSize: Style.font.bodySmall
@@ -967,6 +968,7 @@ Panel {
                       Text {
                         width: agendaList.width - Style.space(56)
                         text: modelData.title
+                        textFormat: Text.PlainText
                         color: root.contentForeground
                         font.family: root.contentFontFamily
                         font.pixelSize: Style.font.bodySmall

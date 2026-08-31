@@ -32,6 +32,7 @@ Rectangle {
     anchors.verticalCenter: parent.verticalCenter
     width: Style.space(30)
     text: root.timeText
+    textFormat: Text.PlainText
     color: root.secondary
     font.family: Style.font.family
     font.pixelSize: Style.font.caption
@@ -75,6 +76,7 @@ Rectangle {
     // A readonly calendar is marked here rather than by grey text, so the
     // reason an event refuses to be edited is legible before the attempt.
     text: (root.event ? root.event.calendar : "") + (root.readOnly ? " ·" : "")
+    textFormat: Text.PlainText
     color: root.secondary
     font.family: Style.font.family
     font.pixelSize: Style.font.caption

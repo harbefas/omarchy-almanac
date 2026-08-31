@@ -2,13 +2,43 @@
 // Qt-free so it can be run under node the way the clock's Model.js is; the QML
 // owns anything locale-shaped.
 
+// Everything that reaches the UI came out of an .ics file that someone else
+// publishes, so it is treated as hostile: bounded in size, stripped of
+// control characters, and capped per field. Without the cap one runaway feed
+// could stall the shell laying out a single line.
+var MAX_PROCESS_OUTPUT = 4 * 1024 * 1024
+var MAX_FIELD_LENGTH = 400
+
+function clean(value) {
+  return String(value)
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .substring(0, MAX_FIELD_LENGTH)
+}
+
+function sanitize(value) {
+  if (typeof value === "string") return clean(value)
+  if (Array.isArray(value)) {
+    var list = []
+    for (var i = 0; i < value.length; i++) list.push(sanitize(value[i]))
+    return list
+  }
+  if (value && typeof value === "object") {
+    var out = {}
+    for (var key in value) out[key] = sanitize(value[key])
+    return out
+  }
+  return value
+}
+
 // A helper's stdout is JSON, but a helper that dies mid-write still produces
 // something parseable-looking, so every parse is guarded and every failure
 // degrades to empty rather than throwing inside a signal handler.
 function parseJson(text, fallback) {
+  var raw = String(text || "")
+  if (raw.length > MAX_PROCESS_OUTPUT) return fallback
   try {
-    var value = JSON.parse(String(text || ""))
-    return value === null ? fallback : value
+    var value = JSON.parse(raw)
+    return value === null ? fallback : sanitize(value)
   } catch (e) {
     return fallback
   }
