@@ -1,5 +1,7 @@
 import QtQuick
 import Quickshell
+import Quickshell.Wayland
+import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
 
@@ -24,6 +26,31 @@ Item {
   property var service: null
   property var pluginRegistry: null
   property bool opened: false
+
+  // Without an explicit screen the layer surface lands on whichever output
+  // Quickshell picked first, which is rarely the one being looked at.
+  property var targetScreen: null
+
+  // Shares the [menu] surface tokens, so a theme that styles the Omarchy menu
+  // styles this too.
+  readonly property color cardBackground: Color.menu.background
+  readonly property color cardBorder: Color.menu.border
+  readonly property var cardBorderSpec: Border.surfaceSpec("menu", "border",
+    cardBorder, Math.max(1, Style.space(2)))
+  readonly property color scrim: Color.menu.scrim
+  readonly property int contentMargin: Style.spacing.panelPadding
+  readonly property int cardWidth: Math.min(Style.space(900), Math.round(panel.width * 0.82))
+  readonly property int cardHeight: Math.min(Style.space(620), Math.round(panel.height * 0.78))
+
+  function currentScreen() {
+    var name = ""
+    try { name = Hyprland.focusedMonitor.name } catch (e) { name = "" }
+    if (!name) return null
+    var screens = Quickshell.screens
+    for (var i = 0; i < screens.length; i++)
+      if (screens[i].name === name) return screens[i]
+    return null
+  }
 
   // ---- view state
   property string view: "agenda"
@@ -113,21 +140,38 @@ Item {
   // ---- lifecycle
 
   function open(payloadJson) {
+    targetScreen = currentScreen()
     opened = true
     today = new Date()
-    selectedDate = new Date()
     view = "agenda"
     focusRegion = "grid"
     query = ""
     listIndex = 0
+
+    // The popup hands over the day it was showing, so the handoff lands where
+    // the person was already looking rather than snapping back to today.
+    var handoff = ""
+    try {
+      var payload = JSON.parse(payloadJson || "{}")
+      if (payload && typeof payload.date === "string") handoff = payload.date
+    } catch (e) { handoff = "" }
+
+    if (handoff !== "") selectKey(handoff)
+    else selectedDate = new Date()
+
     refresh()
     Qt.callLater(function() { keyScope.forceActiveFocus() })
   }
 
+  // Re-entrant: the shell's hide() calls back into close(), so the guard is
+  // what stops the two from calling each other until the stack runs out.
   function close() {
+    if (!opened) return
     opened = false
     formMode = ""
     pendingDelete = ""
+    if (shell && typeof shell.hide === "function")
+      shell.hide((manifest && manifest.id) || "harbefas.almanac")
   }
 
   function refresh() {
@@ -463,20 +507,39 @@ Item {
   // are their own page rather than a permanent sidebar, because the window is
   // mostly used for one thing at a time and the agenda wants the width.
 
-  FloatingWindow {
-    id: window
+  PanelWindow {
+    id: panel
+    screen: root.targetScreen
     visible: root.opened
-    title: "Almanac"
-    // Forced opaque: themes give Color.background an alpha for layer-shell
-    // surfaces, and a see-through window over the wallpaper is unreadable.
-    color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 1)
-    implicitWidth: 1020
-    implicitHeight: 640
-    minimumSize: Qt.size(760, 480)
+    anchors { top: true; bottom: true; left: true; right: true }
+    color: "transparent"
+    WlrLayershell.namespace: "omarchy-almanac"
+    WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+    exclusionMode: ExclusionMode.Ignore
 
-    onVisibleChanged: {
-      if (!visible && root.opened) root.close()
+    Rectangle {
+      anchors.fill: parent
+      color: root.scrim
     }
+
+    MouseArea {
+      anchors.fill: parent
+      onClicked: root.close()
+    }
+
+    BorderSurface {
+      id: card
+      width: root.cardWidth
+      height: root.cardHeight
+      radius: Style.cornerRadius
+      anchors.centerIn: parent
+      color: root.cardBackground
+      borderSpec: root.cardBorderSpec
+      padding: root.contentMargin
+
+      // Clicks inside the card must not reach the dismissal surface below it.
+      MouseArea { anchors.fill: parent; onClicked: {} }
 
     FocusScope {
       id: keyScope
@@ -500,8 +563,8 @@ Item {
 
       Column {
         anchors.fill: parent
-        anchors.margins: Style.space(16)
-        spacing: Style.space(12)
+        anchors.margins: Style.space(12)
+        spacing: Style.space(10)
 
         // ---- header
         Item {
@@ -1065,6 +1128,7 @@ Item {
           }
         }
       }
+    }
     }
   }
 }

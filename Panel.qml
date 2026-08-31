@@ -104,9 +104,12 @@ Panel {
 
   function openManager() {
     if (!root.service) return
+    var payload = JSON.stringify({ date: root.selectedKey })
     root.close()
     root.service.call("hide", "harbefas.almanac")
-    Qt.callLater(function() { root.service.call("summon", "harbefas.almanac") })
+    Qt.callLater(function() {
+      root.service.call("summon", "harbefas.almanac", payload)
+    })
   }
 
   onWeeksChanged: root.refreshEvents()

@@ -196,8 +196,11 @@ Item {
   // ---- Manager panel plumbing. The bar popup keeps its own IPC on the bare
   //      plugin id; this is the full window, so it goes through the shell's
   //      panel loader rather than the bar.
-  function call(name, id) {
-    return !!shell && typeof shell[name] === "function" && shell[name](id) === true
+  function call(name, id, payloadJson) {
+    if (!shell || typeof shell[name] !== "function") return false
+    return (payloadJson === undefined
+      ? shell[name](id)
+      : shell[name](id, payloadJson)) === true
   }
 
   IpcHandler {
