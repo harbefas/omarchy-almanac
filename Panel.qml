@@ -94,12 +94,37 @@ Panel {
     var d = new Date(root.selectedDate)
     d.setDate(d.getDate() + deltaDays)
     root.selectDate(d)
+    root.listIndex = 0
+    if (root.selectedEvents.length === 0) root.focusRegion = "grid"
   }
 
   function refreshEvents() {
     if (!root.service) return
     root.service.setRange(root.weeks[0].days[0].key,
       root.weeks[root.weeks.length - 1].days[6].key)
+  }
+
+  // The popup has two regions: the grid, and the day's event list. Enter
+  // steps into the list so j/k scroll events instead of weeks; Escape steps
+  // back out before it closes the popup.
+  property string focusRegion: "grid"
+  property int listIndex: 0
+
+  function enterAgenda() {
+    if (root.selectedEvents.length === 0) return
+    root.focusRegion = "agenda"
+    root.listIndex = 0
+  }
+
+  function leaveAgenda() {
+    root.focusRegion = "grid"
+    root.listIndex = 0
+  }
+
+  function moveListIndex(delta) {
+    if (root.selectedEvents.length === 0) return
+    root.listIndex = Math.max(0,
+      Math.min(root.selectedEvents.length - 1, root.listIndex + delta))
   }
 
   function openManager() {
@@ -293,17 +318,28 @@ Panel {
       anchors.fill: parent
       blocked: root.editingLife
       onMoveRequested: function(dx, dy) {
+        if (root.focusRegion === "agenda") {
+          // Sideways still moves the day: leaving the list to change day and
+          // coming back would cost two more keys for no reason.
+          if (dx !== 0) root.moveSelection(dx)
+          if (dy !== 0) root.moveListIndex(dy)
+          return
+        }
         if (dx !== 0) root.moveSelection(dx)
         if (dy !== 0) root.moveSelection(dy * 7)
       }
-      onActivateRequested: root.openManager()
-      onCloseRequested: root.close()
+      onActivateRequested: root.enterAgenda()
+      onCloseRequested: {
+        if (root.focusRegion === "agenda") root.leaveAgenda()
+        else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "[") root.moveMonth(-1)
         else if (t === "]") root.moveMonth(1)
         else if (t === "{") root.moveYear(-1)
         else if (t === "}") root.moveYear(1)
+        else if (t === "p" || t === "P") root.openManager()
         else if (t === "t" || t === "T") root.goToToday()
         else if (t === "w" || t === "W") root.toggleWeekStart()
       }
@@ -864,11 +900,21 @@ Panel {
             // rather than a guessed pixel figure, so a busy day never grows
             // the whole panel into a scroll no matter the screen or scale.
             Flickable {
+              id: agendaScroll
+
+              function revealRow(rowY, rowHeight) {
+                if (contentHeight <= height) return
+                if (rowY < contentY) contentY = rowY
+                else if (rowY + rowHeight > contentY + height)
+                  contentY = rowY + rowHeight - height
+              }
+
               readonly property real maxHeight: Math.max(Style.space(60), panel.availableCardHeight
                 - panel.verticalContentInset
                 - fixedColumn.height - calendarColumn.spacing
                 - agendaSeparator.height - calendarColumn.spacing
-                - agendaHeader.height - agendaColumn.spacing)
+                - agendaHeader.height - agendaColumn.spacing
+                - popupFooter.height - agendaColumn.spacing)
 
               visible: root.selectedEvents.length > 0
               width: agendaColumn.width
@@ -887,26 +933,45 @@ Panel {
                 Repeater {
                   model: root.selectedEvents
 
-                  Row {
+                  Rectangle {
                     required property var modelData
+                    required property int index
+                    readonly property bool current: root.focusRegion === "agenda"
+                      && index === root.listIndex
+
                     width: agendaList.width
-                    spacing: Style.space(10)
+                    height: eventRow.implicitHeight + Style.space(4)
+                    radius: Style.cornerRadius
+                    color: current
+                      ? Util.alpha(root.contentForeground, 0.12) : "transparent"
 
-                    Text {
-                      width: Style.space(46)
-                      text: modelData.time !== "" ? modelData.time : "—"
-                      color: Qt.darker(root.contentForeground, 1.5)
-                      font.family: root.contentFontFamily
-                      font.pixelSize: Style.font.bodySmall
-                    }
+                    // Keeping the cursor on screen is the row's job, not the
+                    // Flickable's: a wrapped title makes an index-times-height
+                    // guess drift.
+                    onCurrentChanged: if (current) agendaScroll.revealRow(y, height)
 
-                    Text {
-                      width: agendaList.width - Style.space(56)
-                      text: modelData.title
-                      color: root.contentForeground
-                      font.family: root.contentFontFamily
-                      font.pixelSize: Style.font.bodySmall
-                      wrapMode: Text.WordWrap
+                    Row {
+                      id: eventRow
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: parent.width
+                      spacing: Style.space(10)
+
+                      Text {
+                        width: Style.space(46)
+                        text: modelData.time !== "" ? modelData.time : "—"
+                        color: Qt.darker(root.contentForeground, 1.5)
+                        font.family: root.contentFontFamily
+                        font.pixelSize: Style.font.bodySmall
+                      }
+
+                      Text {
+                        width: agendaList.width - Style.space(56)
+                        text: modelData.title
+                        color: root.contentForeground
+                        font.family: root.contentFontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        wrapMode: Text.WordWrap
+                      }
                     }
                   }
                 }
@@ -917,6 +982,7 @@ Panel {
             // is reachable by mouse, so the handoff to the full window has to
             // be too. Mirrors the keybinds popup, which established this.
             Item {
+              id: popupFooter
               width: agendaColumn.width
               height: Math.max(popupHints.implicitHeight, fullButton.implicitHeight)
 
@@ -926,7 +992,9 @@ Panel {
                 anchors.right: fullButton.left
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
-                text: "h l ← →  ·  j k ↑ ↓  ·  [ ] month  ·  t today"
+                text: root.focusRegion === "agenda"
+                  ? "j k ↑ ↓  ·  h l  day  ·  Esc  back  ·  p  full view"
+                  : "h l ← →  ·  j k ↑ ↓  ·  ⏎ events  ·  [ ] month  ·  p  full view"
                 textFormat: Text.PlainText
                 color: Qt.darker(root.contentForeground, 1.5)
                 font.family: root.contentFontFamily
@@ -948,7 +1016,7 @@ Panel {
                 Text {
                   id: fullLabel
                   anchors.centerIn: parent
-                  text: "Full view  \u23ce"
+                  text: "Full view  p"
                   textFormat: Text.PlainText
                   color: fullArea.containsMouse
                     ? root.contentForeground : Qt.darker(root.contentForeground, 1.5)
