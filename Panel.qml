@@ -20,8 +20,8 @@ import "Model.js" as Model
 // anchor against.
 Panel {
   id: root
-  moduleName: "omarchy.clock"
-  ipcTarget: "omarchy.clock"
+  moduleName: "harbefas.almanac"
+  ipcTarget: "harbefas.almanac"
   manageIpc: false
 
   property var anchorItem: null
@@ -106,10 +106,17 @@ Panel {
     root.events = map
   }
 
+  // Resolved against this file rather than a fixed install path, so the
+  // plugin keeps working whether it is installed, symlinked from a checkout,
+  // or renamed.
+  function helper(name) {
+    return String(Qt.resolvedUrl("bin/" + name)).replace("file://", "")
+  }
+
   function refreshEvents() {
     var first = root.weeks[0].days[0].key
     var last = root.weeks[root.weeks.length - 1].days[6].key
-    eventsProc.command = [Quickshell.env("HOME") + "/.config/omarchy/plugins/nfvelten.clock/bin/calendar-events", first, last]
+    eventsProc.command = [root.helper("khal-events"), first, last]
     eventsProc.running = true
   }
 

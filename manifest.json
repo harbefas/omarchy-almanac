@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "nfvelten.clock",
-  "name": "My Clock",
-  "version": "1.0.0",
-  "author": "Omarchy",
-  "description": "Date/time label with a calendar popup",
+  "id": "harbefas.almanac",
+  "name": "Almanac",
+  "version": "0.1.0",
+  "author": "harbefas",
+  "description": "Calendar, agenda and event manager backed by khal.",
   "kinds": [
     "bar-widget"
   ],
@@ -12,12 +12,10 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "My Clock",
-    "description": "Date/time label with a calendar popup",
+    "displayName": "Almanac",
+    "description": "Calendar, agenda and event manager backed by khal.",
     "category": "Time",
     "allowMultiple": false
   },
-  "omarchy": {
-    "clonedFrom": "omarchy.clock"
-  }
+  "license": "MIT"
 }
