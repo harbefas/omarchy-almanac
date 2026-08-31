@@ -25,6 +25,27 @@ Item {
   readonly property string pluginId: manifest && manifest.id
     ? String(manifest.id) : "harbefas.almanac"
 
+  // The shell hands settings to bar widgets, not to services, so the widget
+  // forwards them here — this is the only place both surfaces can read them
+  // from.
+  property string defaultCalendar: ""
+
+  function applySettings(settings) {
+    if (!settings) return
+    if (typeof settings.defaultCalendar === "string")
+      defaultCalendar = settings.defaultCalendar
+  }
+
+  // The configured calendar only counts if khal still has it and it is
+  // writable; otherwise a renamed calendar would silently send every new
+  // event nowhere.
+  function calendarForNewEvents() {
+    var writable = writableCalendars
+    for (var i = 0; i < writable.length; i++)
+      if (writable[i].name === defaultCalendar) return defaultCalendar
+    return writable.length > 0 ? writable[0].name : ""
+  }
+
   function helper(name) {
     return String(Qt.resolvedUrl("bin/" + name)).replace("file://", "")
   }

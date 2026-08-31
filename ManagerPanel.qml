@@ -284,9 +284,9 @@ Item {
   }
 
   function startNew() {
-    if (!service || service.writableCalendars.length === 0)
-      return note("No writable calendar")
-    form.reset(service.writableCalendars[0].name, selectedKey)
+    var calendar = service ? service.calendarForNewEvents() : ""
+    if (calendar === "") return note("No writable calendar")
+    form.reset(calendar, selectedKey)
     formMode = "new"
   }
 

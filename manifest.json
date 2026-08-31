@@ -19,7 +19,79 @@
     "displayName": "Almanac",
     "description": "Calendar, agenda and event manager backed by khal.",
     "category": "Time",
-    "allowMultiple": false
+    "allowMultiple": false,
+    "defaults": {
+      "format": "dddd HH:mm",
+      "formatAlt": "d MMMM 'W'ww yyyy",
+      "verticalFormat": "HH\n\u2014\nmm",
+      "verticalFormatAlt": "",
+      "weekStartDay": "",
+      "defaultCalendar": "",
+      "birthYear": 0,
+      "lifeExpectancy": 0
+    },
+    "schema": [
+      {
+        "key": "format",
+        "type": "string",
+        "label": "Bar label format",
+        "defaultValue": "dddd HH:mm",
+        "description": "Qt date format. Right-clicking the widget walks the presets and writes the result back here."
+      },
+      {
+        "key": "formatAlt",
+        "type": "string",
+        "label": "Alternate bar label",
+        "defaultValue": "d MMMM 'W'ww yyyy",
+        "description": "Second format kept in the right-click ring."
+      },
+      {
+        "key": "verticalFormat",
+        "type": "string",
+        "label": "Vertical bar label",
+        "defaultValue": "HH\n\u2014\nmm",
+        "description": "Used when the bar runs down the side of the screen."
+      },
+      {
+        "key": "weekStartDay",
+        "type": "enum",
+        "label": "Week starts on",
+        "options": [
+          "Locale",
+          "Sunday",
+          "Monday"
+        ],
+        "defaultValue": "Locale",
+        "description": "Locale follows the rest of the desktop. Clicking the grid's W heading also changes this."
+      },
+      {
+        "key": "defaultCalendar",
+        "type": "string",
+        "label": "Calendar for new events",
+        "defaultValue": "",
+        "description": "Must be a writable calendar in khal's config. Empty picks the first writable one."
+      },
+      {
+        "key": "birthYear",
+        "type": "integer",
+        "label": "Birth year",
+        "min": 0,
+        "max": 2200,
+        "step": 1,
+        "defaultValue": 0,
+        "description": "Optional. With a life expectancy, the popup draws a second progress bar. 0 hides it."
+      },
+      {
+        "key": "lifeExpectancy",
+        "type": "integer",
+        "label": "Life expectancy",
+        "min": 0,
+        "max": 120,
+        "step": 1,
+        "defaultValue": 0,
+        "description": "Optional, in years. 0 hides the bar."
+      }
+    ]
   },
   "license": "MIT"
 }

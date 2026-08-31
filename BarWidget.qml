@@ -107,6 +107,7 @@ BarWidget {
     if ("anchorItem" in target) target.anchorItem = button
     if ("hostWidget" in target) target.hostWidget = root
     if ("service" in target) target.service = root.almanac
+    if (root.almanac) root.almanac.applySettings(root.settings)
   }
 
   implicitWidth: button.implicitWidth
