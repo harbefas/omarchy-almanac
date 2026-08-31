@@ -64,6 +64,21 @@ Item {
   readonly property bool busy: service ? service.busy : false
   readonly property bool loading: service ? service.loading : false
 
+  // The old hints named what a step meant on the calendar ("day", "week");
+  // these name the direction the cursor moves, which is what someone reaching
+  // for hjkl is actually asking. Phrased for wherever the cursor is, so the
+  // line never advertises a key that does something else right now.
+  readonly property string hintLine: {
+    if (view === "feeds")
+      return "j k  ↑ ↓     n  add     s  sync     Shift+S  sync all     d  remove"
+    if (view === "calendars")
+      return "j k  ↑ ↓     Space  show / hide"
+    if (focusRegion === "list")
+      return "j k  ↑ ↓     Enter  edit     d  delete     Tab  calendar     /  search"
+    return "h l  ← →     j k  ↑ ↓     [ ]  month     t  today"
+      + "     Tab  events     n  new     /  search"
+  }
+
   function visibleEvents(list) {
     var out = []
     for (var i = 0; i < list.length; i++)
@@ -302,15 +317,12 @@ Item {
     if (textInputFocused()) return false
 
     // ---- view switching, live everywhere
-    if (plain && text === "a") { view = "agenda"; focusRegion = "grid"; return true }
+    if (plain && text === "a") { view = "agenda"; return true }
+    if (plain && text === "c") { view = "calendars"; return true }
     if (plain && text === "f") { view = "feeds"; return true }
-    if (plain && text === "c") {
-      focusRegion = focusRegion === "calendars" ? "grid" : "calendars"
-      return true
-    }
     if (plain && text === "r") { refresh(); note("Refreshing"); return true }
 
-    if (focusRegion === "calendars") return handleCalendarsKey(event, text, plain)
+    if (view === "calendars") return handleCalendarsKey(event, text, plain)
     if (view === "feeds") return handleFeedsKey(event, text, plain)
     return handleAgendaKey(event, text, plain)
   }
@@ -447,11 +459,9 @@ Item {
 
   // ---- view
   //
-  // Laid out like the rest of the shell's windows: a fixed sidebar carrying
-  // navigation and the calendar list, a header with the page title and its
-  // actions, and a footer strip that always says what is selected. The
-  // calendars are a sidebar list rather than a page of their own — they are a
-  // filter over the agenda, not a place to go.
+  // A title row with the pages beside it, then the page itself: the calendars
+  // are their own page rather than a permanent sidebar, because the window is
+  // mostly used for one thing at a time and the agenda wants the width.
 
   FloatingWindow {
     id: window
@@ -460,9 +470,9 @@ Item {
     // Forced opaque: themes give Color.background an alpha for layer-shell
     // surfaces, and a see-through window over the wallpaper is unreadable.
     color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 1)
-    implicitWidth: 1080
-    implicitHeight: 660
-    minimumSize: Qt.size(820, 520)
+    implicitWidth: 1020
+    implicitHeight: 640
+    minimumSize: Qt.size(760, 480)
 
     onVisibleChanged: {
       if (!visible && root.opened) root.close()
@@ -488,247 +498,117 @@ Item {
         if (root.isModifierKey(event.key)) root.shortcutHintsActive = false
       }
 
-      // ---------------------------------------------------------- sidebar
+      Column {
+        anchors.fill: parent
+        anchors.margins: Style.space(16)
+        spacing: Style.space(12)
 
-      Rectangle {
-        id: sidebar
-        anchors.left: parent.left
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        width: Style.space(118)
-        color: Util.alpha(root.foreground, 0.04)
-
-        Column {
-          anchors.fill: parent
-          anchors.margins: Style.space(10)
-          spacing: Style.space(4)
-
-          Repeater {
-            model: [
-              { key: "agenda", label: "Agenda", hint: "a" },
-              { key: "feeds", label: "Feeds", hint: "f" }
-            ]
-
-            Rectangle {
-              required property var modelData
-              width: parent.width
-              height: Style.space(22)
-              radius: Style.cornerRadius
-              color: root.view === modelData.key
-                ? Util.alpha(root.foreground, 0.10) : "transparent"
-
-              Text {
-                anchors.left: parent.left
-                anchors.leftMargin: Style.space(8)
-                anchors.verticalCenter: parent.verticalCenter
-                text: modelData.label
-                color: root.view === modelData.key ? root.foreground : root.secondary
-                font.family: Style.font.family
-                font.pixelSize: Style.font.body
-                font.bold: root.view === modelData.key
-              }
-
-              Text {
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(8)
-                anchors.verticalCenter: parent.verticalCenter
-                text: modelData.hint
-                color: root.secondary
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
-              }
-
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.view = modelData.key
-              }
-            }
-          }
-
-          Item { width: 1; height: Style.space(8) }
-
-          Rectangle {
-            width: parent.width
-            height: 1
-            color: Util.alpha(root.foreground, 0.12)
-          }
-
-          Item { width: 1; height: Style.space(6) }
-
-          Row {
-            width: parent.width
-            spacing: Style.space(6)
-
-            Text {
-              text: "YOUR CALENDARS"
-              color: root.secondary
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              font.bold: true
-            }
-
-            Text {
-              text: "c"
-              color: root.focusRegion === "calendars" ? root.accent : root.secondary
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-            }
-          }
-
-          Item { width: 1; height: Style.space(4) }
-
-          ListView {
-            id: calendarList
-            width: parent.width
-            height: parent.height - Style.space(96)
-            clip: true
-            model: root.calendars
-            currentIndex: root.calendarIndex
-
-            delegate: Rectangle {
-              required property var modelData
-              required property int index
-              readonly property bool shown: !root.hidden[modelData.name]
-
-              width: calendarList.width
-              height: Style.space(20)
-              radius: Style.cornerRadius
-              color: index === root.calendarIndex && root.focusRegion === "calendars"
-                ? Util.alpha(root.foreground, 0.10) : "transparent"
-
-              Text {
-                anchors.left: parent.left
-                anchors.leftMargin: Style.space(8)
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(8)
-                anchors.verticalCenter: parent.verticalCenter
-                // A hollow dot reads as "off" at this size where a greyed
-                // label would just read as a different calendar.
-                text: (parent.shown ? "● " : "○ ") + modelData.name
-                  + (modelData.readonly ? "" : "  +")
-                color: parent.shown ? root.foreground : root.secondary
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-              }
-
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  root.calendarIndex = index
-                  root.focusRegion = "calendars"
-                  root.toggleCalendar(modelData.name)
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // ----------------------------------------------------------- header
-
-      Item {
-        id: header
-        anchors.left: sidebar.right
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.margins: Style.space(12)
-        height: Style.space(34)
-
-        Column {
-          anchors.left: parent.left
-          anchors.verticalCenter: parent.verticalCenter
-          spacing: Style.space(1)
+        // ---- header
+        Item {
+          width: parent.width
+          height: Style.space(28)
 
           Text {
-            text: root.view === "feeds" ? "Feeds" : "Agenda"
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Almanac"
             color: root.foreground
             font.family: Style.font.family
             font.pixelSize: Style.font.title
             font.bold: true
           }
 
-          Text {
-            text: root.view === "feeds"
-              ? root.feeds.length + " subscribed .ics sources"
-              : Qt.locale().monthName(root.viewMonth, Locale.LongFormat) + " " + root.viewYear
-            color: root.secondary
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-        }
+          Row {
+            anchors.centerIn: parent
+            spacing: Style.space(14)
 
-        Row {
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          spacing: Style.space(10)
+            Repeater {
+              model: [
+                { key: "agenda", label: "Agenda  a" },
+                { key: "calendars", label: "Calendars  c" },
+                { key: "feeds", label: "Feeds  f" }
+              ]
 
-          Text {
-            text: root.busy ? "working…" : (root.loading ? "loading…" : root.status)
-            color: root.busy || root.loading ? root.accent : root.secondary
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            anchors.verticalCenter: parent.verticalCenter
-          }
+              Text {
+                required property var modelData
+                text: modelData.label
+                color: root.view === modelData.key ? root.accent : root.secondary
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                font.bold: root.view === modelData.key
 
-          Repeater {
-            model: [
-              { glyph: "↻", action: "refresh" },
-              { glyph: "✕", action: "close" }
-            ]
-
-            Text {
-              required property var modelData
-              text: modelData.glyph
-              color: root.secondary
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
-              anchors.verticalCenter: parent.verticalCenter
-
-              MouseArea {
-                anchors.fill: parent
-                anchors.margins: -Style.space(4)
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  if (modelData.action === "refresh") { root.refresh(); root.note("Refreshing") }
-                  else root.close()
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.view = modelData.key
                 }
               }
             }
           }
+
+          Text {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            // A full-range khal sweep takes a couple of seconds, which is
+            // long enough that a stepped month looks broken unless the wait
+            // is on screen.
+            text: root.busy ? "working…" : (root.loading ? "loading…" : root.status)
+            color: root.busy || root.loading ? root.accent : root.secondary
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
         }
-      }
-
-      // ------------------------------------------------------------ body
-
-      Item {
-        id: body
-        anchors.left: sidebar.right
-        anchors.right: parent.right
-        anchors.top: header.bottom
-        anchors.bottom: footer.top
-        anchors.leftMargin: Style.space(12)
-        anchors.rightMargin: Style.space(12)
-        anchors.topMargin: Style.space(8)
 
         // ---- agenda
         Row {
-          anchors.fill: parent
+          width: parent.width
+          height: parent.height - Style.space(70)
           visible: root.view === "agenda"
-          spacing: Style.space(14)
+          spacing: Style.space(16)
 
           Column {
             id: gridColumn
-            width: Math.min(Math.round(parent.width * 0.42), Style.space(140))
-            spacing: Style.space(6)
+            width: Math.round(parent.width * 0.46)
+            spacing: Style.space(8)
 
-            // Cells are sized from the column rather than given a fixed
-            // width: Style.space() scales with the display, and seven fixed
-            // cells overflowed the column into the agenda beside it.
+            // Cells are sized from the column so the grid fills it: a fixed
+            // Style.space() width overflowed into the agenda on one display
+            // and left the grid small on another.
             readonly property int gap: Style.space(2)
             readonly property int cell: Math.floor((width - 6 * gap) / 7)
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Text {
+                text: Qt.locale().monthName(root.viewMonth, Locale.LongFormat).toUpperCase()
+                  + " " + root.viewYear
+                color: root.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              Repeater {
+                model: [{ glyph: "‹", step: -1 }, { glyph: "›", step: 1 }]
+
+                Text {
+                  required property var modelData
+                  text: modelData.glyph
+                  color: root.secondary
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+
+                  MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -Style.space(4)
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.moveMonth(modelData.step)
+                  }
+                }
+              }
+            }
 
             Grid {
               columns: 7
@@ -767,7 +647,7 @@ Item {
                       (root.service ? root.service.eventsByDay[modelData.key] : null) || [])
 
                     width: gridColumn.cell
-                    height: Math.round(gridColumn.cell * 0.82)
+                    height: Math.round(gridColumn.cell * 0.86)
                     radius: Style.cornerRadius
                     color: isSelected
                       ? Util.alpha(root.accent, 0.22)
@@ -783,16 +663,26 @@ Item {
                         text: modelData.day
                         color: modelData.inMonth ? root.foreground : root.secondary
                         font.family: Style.font.family
-                        font.pixelSize: Style.font.bodySmall
+                        font.pixelSize: Style.font.subtitle
                       }
 
-                      Rectangle {
+                      Row {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        width: Style.space(3)
-                        height: width
-                        radius: width / 2
-                        visible: parent.parent.cellEvents.length > 0
-                        color: parent.parent.isSelected ? root.accent : root.secondary
+                        spacing: Style.space(2)
+
+                        Repeater {
+                          // Capped at three: past that the count stops being
+                          // readable at a glance and the dots become a smear.
+                          model: Math.min(3, parent.parent.parent.cellEvents.length)
+
+                          Rectangle {
+                            width: Style.space(3)
+                            height: width
+                            radius: width / 2
+                            color: parent.parent.parent.isSelected
+                              ? root.accent : root.secondary
+                          }
+                        }
                       }
                     }
 
@@ -808,17 +698,18 @@ Item {
                 }
               }
             }
+
           }
 
           Column {
-            width: parent.width - gridColumn.width - Style.space(14)
+            width: parent.width - gridColumn.width - Style.space(16)
             height: parent.height
-            spacing: Style.space(6)
+            spacing: Style.space(8)
 
             TextField {
               id: searchField
               width: parent.width
-              placeholderText: "Search the loaded range"
+              placeholderText: "/  search the loaded range"
               text: root.query
               onTextChanged: root.query = text
               Keys.onEscapePressed: {
@@ -840,7 +731,7 @@ Item {
             ListView {
               id: agendaList
               width: parent.width
-              height: parent.height - Style.space(56)
+              height: parent.height - Style.space(46)
               clip: true
               model: root.dayEvents
               currentIndex: root.listIndex
@@ -872,99 +763,145 @@ Item {
                 font.pixelSize: Style.font.bodySmall
               }
             }
+
+          }
+        }
+
+        // ---- calendars
+        Column {
+          width: parent.width
+          height: parent.height - Style.space(70)
+          visible: root.view === "calendars"
+          spacing: Style.space(8)
+
+          Text {
+            text: "Space hides a calendar from the agenda. It keeps syncing."
+            color: root.secondary
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          ListView {
+            id: calendarList
+            width: parent.width
+            height: parent.height - Style.space(30)
+            clip: true
+            model: root.calendars
+            currentIndex: root.calendarIndex
+
+            delegate: Rectangle {
+              required property var modelData
+              required property int index
+              readonly property bool shown: !root.hidden[modelData.name]
+
+              width: calendarList.width
+              height: Style.space(30)
+              color: index === root.calendarIndex
+                ? Util.alpha(root.foreground, 0.10) : "transparent"
+
+              Text {
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                // A hollow dot reads as "off" where a greyed label would
+                // just read as a different calendar.
+                text: (parent.shown ? "●  " : "○  ") + modelData.name
+                color: parent.shown ? root.foreground : root.secondary
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+              }
+
+              Text {
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                text: modelData.readonly ? "readonly" : "writable"
+                color: root.secondary
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.calendarIndex = index
+                  root.toggleCalendar(modelData.name)
+                }
+              }
+            }
           }
         }
 
         // ---- feeds
-        ListView {
-          id: feedList
-          anchors.fill: parent
+        Column {
+          width: parent.width
+          height: parent.height - Style.space(70)
           visible: root.view === "feeds"
-          clip: true
-          model: root.feeds
-          currentIndex: root.feedIndex
+          spacing: Style.space(8)
 
-          delegate: Rectangle {
-            required property var modelData
-            required property int index
-            width: feedList.width
-            height: Style.space(40)
-            color: index === root.feedIndex
-              ? Util.alpha(root.foreground, 0.10) : "transparent"
+          ListView {
+            id: feedList
+            width: parent.width
+            height: parent.height - Style.space(30)
+            clip: true
+            model: root.feeds
+            currentIndex: root.feedIndex
 
-            Column {
-              anchors.left: parent.left
-              anchors.leftMargin: Style.space(10)
-              anchors.right: parent.right
-              anchors.rightMargin: Style.space(10)
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(1)
+            delegate: Rectangle {
+              required property var modelData
+              required property int index
+              width: feedList.width
+              height: Style.space(40)
+              color: index === root.feedIndex
+                ? Util.alpha(root.foreground, 0.10) : "transparent"
 
-              Text {
-                width: parent.width
-                text: modelData.calendar
-                color: root.foreground
-                font.family: Style.font.family
-                font.pixelSize: Style.font.body
-                elide: Text.ElideRight
+              Column {
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10)
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(1)
+
+                Text {
+                  width: parent.width
+                  text: modelData.calendar
+                  color: root.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                }
+
+                Text {
+                  width: parent.width
+                  text: modelData.url
+                  color: root.secondary
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideMiddle
+                }
               }
 
-              Text {
-                width: parent.width
-                text: modelData.url
-                color: root.secondary
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideMiddle
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.feedIndex = index
               }
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.feedIndex = index
             }
           }
         }
-      }
 
-      // ----------------------------------------------------------- footer
-
-      Rectangle {
-        id: footer
-        anchors.left: sidebar.right
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        height: Style.space(30)
-        color: Util.alpha(root.foreground, 0.04)
-
+        // ---- keys, for wherever the cursor is
         Text {
-          anchors.left: parent.left
-          anchors.leftMargin: Style.space(12)
-          anchors.right: footerRight.left
-          anchors.rightMargin: Style.space(12)
-          anchors.verticalCenter: parent.verticalCenter
-          text: root.view === "feeds"
-            ? "n add   s sync   Shift+S sync all   d remove"
-            : "h l day   j k week   [ ] month   t today   Tab list   n new   e edit   d delete"
+          width: parent.width
+          text: root.hintLine
           color: root.secondary
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
 
-        Text {
-          id: footerRight
-          anchors.right: parent.right
-          anchors.rightMargin: Style.space(12)
-          anchors.verticalCenter: parent.verticalCenter
-          text: root.selectedEvent
-            ? Khal.rangeLabel(root.selectedEvent) + "  ·  " + root.selectedEvent.calendar
-            : root.dayEvents.length + " events"
-          color: root.secondary
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
       }
 
       // ---- event form

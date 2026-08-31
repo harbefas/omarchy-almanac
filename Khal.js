@@ -28,16 +28,20 @@ function isoDateTime(date, time) {
   return isoDate(date) + (time ? "T" + time : "")
 }
 
-// Events arrive flat and sorted; the grid wants them keyed by day. A
-// multi-day event is reported by khal under its start date only, so it is
-// spread across the days it actually covers — otherwise a tournament running
+// Events arrive flat and sorted; the grid wants them keyed by day. An all-day
+// event spanning several days is reported by khal under its start date only,
+// so it is spread across the days it covers — otherwise a tournament running
 // all fortnight shows up on one cell and the other thirteen look empty.
+//
+// A *timed* event is never spread, even when it crosses midnight. A ballgame
+// starting 23:10 and ending 02:10 belongs to the night it starts; listing it
+// on the next day too put "23:10" on a day it never began.
 function groupByDay(events, firstKey, lastKey) {
   var map = {}
   for (var i = 0; i < events.length; i++) {
     var event = events[i]
     var day = event.date
-    var last = event.endDate || event.date
+    var last = event.time ? day : (event.endDate || event.date)
     // An all-day event's DTEND is exclusive, so the final day is not its own.
     if (!event.time && last > day) last = addDays(last, -1)
     while (day <= last) {

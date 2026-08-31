@@ -105,7 +105,8 @@ Panel {
   function openManager() {
     if (!root.service) return
     root.close()
-    root.service.call("summon", "harbefas.almanac")
+    root.service.call("hide", "harbefas.almanac")
+    Qt.callLater(function() { root.service.call("summon", "harbefas.almanac") })
   }
 
   onWeeksChanged: root.refreshEvents()
@@ -292,7 +293,7 @@ Panel {
         if (dx !== 0) root.moveSelection(dx)
         if (dy !== 0) root.moveSelection(dy * 7)
       }
-      onActivateRequested: root.goToToday()
+      onActivateRequested: root.openManager()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
@@ -905,6 +906,59 @@ Panel {
                       wrapMode: Text.WordWrap
                     }
                   }
+                }
+              }
+            }
+
+            // Hints on the left, a clickable way out on the right: the popup
+            // is reachable by mouse, so the handoff to the full window has to
+            // be too. Mirrors the keybinds popup, which established this.
+            Item {
+              width: agendaColumn.width
+              height: Math.max(popupHints.implicitHeight, fullButton.implicitHeight)
+
+              Text {
+                id: popupHints
+                anchors.left: parent.left
+                anchors.right: fullButton.left
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                text: "h l ← →  ·  j k ↑ ↓  ·  [ ] month  ·  t today"
+                textFormat: Text.PlainText
+                color: Qt.darker(root.contentForeground, 1.5)
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+
+              Rectangle {
+                id: fullButton
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                radius: Style.cornerRadius
+                implicitWidth: fullLabel.implicitWidth + Style.spacing.controlPaddingX
+                implicitHeight: fullLabel.implicitHeight + Style.spacing.xs * 2
+                color: fullArea.containsMouse ? Color.menu.selectedBackground : "transparent"
+                border.color: Qt.darker(root.contentForeground, 1.5)
+                border.width: 1
+
+                Text {
+                  id: fullLabel
+                  anchors.centerIn: parent
+                  text: "Full view  \u23ce"
+                  textFormat: Text.PlainText
+                  color: fullArea.containsMouse
+                    ? root.contentForeground : Qt.darker(root.contentForeground, 1.5)
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                MouseArea {
+                  id: fullArea
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.openManager()
                 }
               }
             }

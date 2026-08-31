@@ -72,10 +72,6 @@ Rectangle {
     anchors.right: parent.right
     anchors.rightMargin: Style.space(10)
     anchors.verticalCenter: parent.verticalCenter
-    // Capped so a long calendar name cannot eat the title beside it.
-    width: Math.min(implicitWidth, Math.round(root.width * 0.34))
-    horizontalAlignment: Text.AlignRight
-    elide: Text.ElideRight
     // A readonly calendar is marked here rather than by grey text, so the
     // reason an event refuses to be edited is legible before the attempt.
     text: (root.event ? root.event.calendar : "") + (root.readOnly ? " ·" : "")
