@@ -97,12 +97,12 @@ Item {
   // line never advertises a key that does something else right now.
   readonly property string hintLine: {
     if (view === "feeds")
-      return "j k  ↑ ↓     n  add     s  sync     Shift+S  sync all     d  remove"
+      return "j k  ↓ ↑     n  add     s  sync     Shift+S  sync all     d  remove"
     if (view === "calendars")
-      return "j k  ↑ ↓     Space  show / hide"
+      return "j k  ↓ ↑     Space  show / hide"
     if (focusRegion === "list")
-      return "j k  ↑ ↓     Enter  edit     d  delete     Tab  calendar     /  search"
-    return "h l  ← →     j k  ↑ ↓     [ ]  month     t  today"
+      return "j k  ↓ ↑     Enter  edit     d  delete     Tab  calendar     /  search"
+    return "h l  ← →     j k  ↓ ↑     [ ]  month     t  today"
       + "     Tab  events     n  new     /  search"
   }
 

@@ -993,8 +993,8 @@ Panel {
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.focusRegion === "agenda"
-                  ? "j k ↑ ↓  ·  h l  day  ·  Esc  back  ·  p  full view"
-                  : "h l ← →  ·  j k ↑ ↓  ·  ⏎ events  ·  [ ] month  ·  p  full view"
+                  ? "j k ↓ ↑  ·  h l ← →  day  ·  Esc  back"
+                  : "h l ← →  ·  j k ↓ ↑  ·  ⏎ events  ·  [ ] month"
                 textFormat: Text.PlainText
                 color: Qt.darker(root.contentForeground, 1.5)
                 font.family: root.contentFontFamily
