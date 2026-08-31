@@ -14,6 +14,15 @@ Item {
   property bool active: false
   property string navHint: ""
   property bool showWash: true
+
+  // Where the keycap sits relative to the thing it marks. The default corner
+  // lands on top of the target's own content when the target is a line of
+  // text or a list whose first row reaches the edge, so small inline targets
+  // put it outside instead.
+  //   "corner"  top-right, inside — for large surfaces with slack
+  //   "above"   just above the target, right-aligned
+  //   "bottom"  bottom-right, inside
+  property string placement: "corner"
   property color foreground: Color.foreground
   property color hintColor: Color.accent
 
@@ -112,8 +121,15 @@ Item {
   BorderSurface {
     id: keycap
     anchors.right: parent.right
-    anchors.top: parent.top
-    anchors.margins: Math.max(1, Style.space(2))
+    anchors.rightMargin: root.placement === "above" ? 0 : Math.max(1, Style.space(2))
+    anchors.top: root.placement === "corner" ? parent.top : undefined
+    anchors.topMargin: Math.max(1, Style.space(2))
+    anchors.bottom: root.placement === "corner" ? undefined
+      : (root.placement === "above" ? parent.top : parent.bottom)
+    // "bottom" floats clear of the target's own edge; flush against it the
+    // keycap reads as part of whatever sits below.
+    anchors.bottomMargin: root.placement === "bottom"
+      ? Math.max(1, Style.space(8)) : Math.max(1, Style.space(2))
     implicitWidth: keycapText.implicitWidth + Style.space(8)
     implicitHeight: keycapText.implicitHeight + Style.space(3)
     radius: Math.max(2, Math.round(Style.cornerRadius * 0.7))

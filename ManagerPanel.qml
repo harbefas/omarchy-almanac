@@ -634,6 +634,7 @@ Item {
 
                 KeyHint {
                   sequences: [modelData.hint]
+                  placement: "above"
                 }
 
                 MouseArea {
@@ -708,6 +709,7 @@ Item {
                   KeyHint {
                     sequences: [modelData.step < 0 ? "[" : "]"]
                     showWash: false
+                    placement: "above"
                   }
 
                   MouseArea {
@@ -890,6 +892,7 @@ Item {
                 navHint: root.focusRegion === "list" ? "j k" : ""
                 sequences: root.focusRegion === "list"
                   ? ["Enter", "d"] : ["Tab", "n"]
+                placement: "bottom"
               }
             }
 
@@ -982,6 +985,7 @@ Item {
             KeyHint {
               navHint: "j k"
               sequences: ["Space"]
+              placement: "bottom"
             }
 
             delegate: Rectangle {
@@ -1047,6 +1051,7 @@ Item {
             KeyHint {
               navHint: "j k"
               sequences: ["n", "s", "d"]
+              placement: "bottom"
             }
 
             delegate: Rectangle {

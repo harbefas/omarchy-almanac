@@ -54,7 +54,18 @@ khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null |
         calendar: .calendar,
         uid: .uid,
         location: .location,
-        description: .description,
+        # fixtur.es staples a promo trailer onto the DESCRIPTION of every
+        # event it publishes ("Calendar not up to date? …" plus a Buy Me a
+        # Coffee link), which for a fixture is the entire description. It is
+        # advertising in a calendar, and it filled the detail card on every
+        # match, so it is cut here rather than in the UI — the raw .ics stays
+        # untouched and comes back whole on the next sync.
+        description: (
+          .description
+          | sub("Calendar not up to date\\?[\\s\\S]*$"; "")
+          | sub("Support [^\\n]*Buy Me a Coffee[\\s\\S]*$"; "")
+          | sub("^\\s+|\\s+$"; "")
+        ),
         repeats: (.["repeat-symbol"] != "")
       })
     | unique
