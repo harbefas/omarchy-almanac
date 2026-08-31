@@ -623,6 +623,7 @@ Item {
           height: Style.space(28)
 
           Text {
+            textFormat: Text.PlainText
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             text: "Almanac"
@@ -644,6 +645,7 @@ Item {
               ]
 
               Text {
+                textFormat: Text.PlainText
                 required property var modelData
                 text: modelData.label
                 color: root.view === modelData.key ? root.accent : root.secondary
@@ -666,6 +668,7 @@ Item {
           }
 
           Text {
+            textFormat: Text.PlainText
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             // A full-range khal sweep takes a couple of seconds, which is
@@ -707,6 +710,7 @@ Item {
               spacing: Style.space(8)
 
               Text {
+                textFormat: Text.PlainText
                 text: Qt.locale().monthName(root.viewMonth, Locale.LongFormat).toUpperCase()
                   + " " + root.viewYear
                 color: root.foreground
@@ -719,6 +723,7 @@ Item {
                 model: [{ glyph: "‹", step: -1 }, { glyph: "›", step: 1 }]
 
                 Text {
+                  textFormat: Text.PlainText
                   required property var modelData
                   text: modelData.glyph
                   color: root.secondary
@@ -749,6 +754,7 @@ Item {
                 model: root.weekdays
 
                 Text {
+                  textFormat: Text.PlainText
                   required property var modelData
                   width: gridColumn.cell
                   horizontalAlignment: Text.AlignHCenter
@@ -790,6 +796,7 @@ Item {
                       spacing: Style.space(1)
 
                       Text {
+                        textFormat: Text.PlainText
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: modelData.day
                         color: modelData.inMonth ? root.foreground : root.secondary
@@ -855,6 +862,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText
               id: agendaHeading
               text: root.query.trim() !== ""
                 ? root.dayEvents.length + " MATCHING"
@@ -993,6 +1001,7 @@ Item {
           spacing: Style.space(8)
 
           Text {
+            textFormat: Text.PlainText
             text: "Space hides a calendar from the agenda. It keeps syncing."
             color: root.secondary
             font.family: Style.font.family
@@ -1037,6 +1046,7 @@ Item {
               }
 
               Text {
+                textFormat: Text.PlainText
                 anchors.right: parent.right
                 anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
@@ -1140,6 +1150,7 @@ Item {
 
         // ---- keys, for wherever the cursor is
         Text {
+          textFormat: Text.PlainText
           width: parent.width
           text: root.hintLine
           color: root.secondary
@@ -1162,6 +1173,7 @@ Item {
           spacing: Style.space(6)
 
           Text {
+            textFormat: Text.PlainText
             text: root.formMode === "new" ? "NEW EVENT" : "EDIT EVENT"
             color: root.foreground
             font.family: Style.font.family
@@ -1170,6 +1182,7 @@ Item {
           }
 
           Text {
+            textFormat: Text.PlainText
             // Deleting a repeating event already warned that it takes the
             // series; an edit rewrites the same one file, so it changes every
             // occurrence too. Saying one and not the other was misleading.
@@ -1255,6 +1268,7 @@ Item {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: "Tab  next field     Ctrl+Enter  save     Esc  cancel"
             color: root.secondary
             font.family: Style.font.family
@@ -1277,6 +1291,7 @@ Item {
           spacing: Style.space(6)
 
           Text {
+            textFormat: Text.PlainText
             text: "ADD FEED"
             color: root.foreground
             font.family: Style.font.family
@@ -1285,6 +1300,7 @@ Item {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: "Writes a vdirsyncer pair and the matching khal calendar."
             color: root.secondary
             font.family: Style.font.family
@@ -1310,6 +1326,7 @@ Item {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: "Tab  next field     Ctrl+Enter  add     Esc  cancel"
             color: root.secondary
             font.family: Style.font.family
@@ -1341,6 +1358,7 @@ Item {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: root.pendingDelete.indexOf("feed:") === 0
               ? "It stops syncing. The events already downloaded stay on disk."
               : (root.selectedEvent && root.selectedEvent.repeats
@@ -1352,6 +1370,7 @@ Item {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: "y / Enter  confirm     Esc  cancel"
             color: root.accent
             font.family: Style.font.family

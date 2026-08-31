@@ -383,6 +383,7 @@ Panel {
               spacing: Style.space(10)
 
               Text {
+                textFormat: Text.PlainText
                 // Baseline-aligned, not center-aligned: "July 26" carries a
                 // descender, so centering the two boxes leaves the icon
                 // sitting visibly low against the digits.
@@ -399,6 +400,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 id: heroDate
                 anchors.verticalCenter: parent.verticalCenter
                 text: Qt.formatDate(root.today, "MMMM d")
@@ -456,6 +458,7 @@ Panel {
                 spacing: Style.space(10)
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: "BORN"
                   color: Qt.darker(root.contentForeground, 1.5)
@@ -477,6 +480,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   anchors.verticalCenterOffset: 0
                   leftPadding: Style.space(6)
@@ -501,6 +505,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 id: yearLabel
                 visible: !root.editingLife
                 anchors.left: parent.left
@@ -513,6 +518,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 id: yearPercent
                 visible: !root.editingLife
                 anchors.right: parent.right
@@ -562,6 +568,7 @@ Panel {
               height: Math.max(lifeLabel.implicitHeight, Style.space(10))
 
               Text {
+                textFormat: Text.PlainText
                 id: lifeLabel
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
@@ -573,6 +580,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 id: lifePercent
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
@@ -662,6 +670,7 @@ Panel {
                     : "transparent"
 
                   Text {
+                    textFormat: Text.PlainText
                     anchors.centerIn: parent
                     text: "W"
                     color: weekStartMouse.containsMouse
@@ -697,6 +706,7 @@ Panel {
                   model: root.weekdays
 
                   Text {
+                    textFormat: Text.PlainText
                     required property var modelData
                     width: root.cellWidth
                     height: Style.space(16)
@@ -720,6 +730,7 @@ Panel {
                   spacing: root.cellSpacing
 
                   Text {
+                    textFormat: Text.PlainText
                     width: root.weekColumnWidth
                     height: root.cellHeight
                     horizontalAlignment: Text.AlignHCenter
@@ -757,6 +768,7 @@ Panel {
                       border.color: Style.normalBorderFor(root.contentForeground, Color.accent)
 
                       Text {
+                        textFormat: Text.PlainText
                         anchors.centerIn: parent
                         anchors.verticalCenterOffset: hasEvents ? -Style.space(3) : 0
                         text: modelData.day
@@ -821,6 +833,7 @@ Panel {
               height: monthLabel.implicitHeight + Style.space(10)
 
               Text {
+                textFormat: Text.PlainText
                 id: monthLabel
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.verticalCenter: parent.verticalCenter
@@ -875,6 +888,7 @@ Panel {
             spacing: Style.space(6)
 
             Text {
+              textFormat: Text.PlainText
               id: agendaHeader
               width: parent.width
               text: Qt.formatDate(root.selectedDate, "dddd, MMMM d").toUpperCase()
