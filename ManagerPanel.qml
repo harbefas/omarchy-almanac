@@ -105,6 +105,7 @@ Item {
   readonly property var feeds: service ? service.feeds : []
   readonly property bool busy: service ? service.busy : false
   readonly property bool loading: service ? service.loading : false
+  readonly property string error: service ? service.error : ""
 
   // The old hints named what a step meant on the calendar ("day", "week");
   // these name the direction the cursor moves, which is what someone reaching
@@ -650,8 +651,14 @@ Item {
             // A full-range khal sweep takes a couple of seconds, which is
             // long enough that a stepped month looks broken unless the wait
             // is on screen.
-            text: root.busy ? "working…" : (root.loading ? "loading…" : root.status)
-            color: root.busy || root.loading ? root.accent : root.secondary
+            // A broken read is not transient state, so it stays in the
+            // header until a read succeeds.
+            text: root.error !== "" ? root.error
+              : (root.busy ? "working…" : (root.loading ? "loading…" : root.status))
+            color: root.busy || root.loading || root.error !== ""
+              ? root.accent : root.secondary
+            elide: Text.ElideRight
+            width: Math.min(implicitWidth, Style.space(220))
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
@@ -837,7 +844,9 @@ Item {
             ListView {
               id: agendaList
               width: parent.width
-              height: parent.height - Style.space(46)
+              // Shares the column with the detail card below, which only
+              // takes room when there is something selected to describe.
+              height: parent.height - Style.space(46) - detail.height
               clip: true
               model: root.dayEvents
               currentIndex: root.listIndex
@@ -862,8 +871,16 @@ Item {
 
               Text {
                 anchors.centerIn: parent
+                width: parent.width - Style.space(20)
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
                 visible: agendaList.count === 0
-                text: "No events"
+                // An empty day and a calendar that could not be read looked
+                // exactly alike before.
+                text: root.error !== ""
+                  ? "Could not read the calendar.\n" + root.error
+                  : "No events"
+                textFormat: Text.PlainText
                 color: root.secondary
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
@@ -873,6 +890,67 @@ Item {
                 navHint: root.focusRegion === "list" ? "j k" : ""
                 sequences: root.focusRegion === "list"
                   ? ["Enter", "d"] : ["Tab", "n"]
+              }
+            }
+
+            // The description was only ever visible inside the edit form,
+            // which readonly calendars never open — so everything a feed
+            // wrote was unreachable. This shows it in place.
+            Column {
+              id: detail
+              width: parent.width
+              spacing: Style.space(2)
+              visible: root.selectedEvent !== null && root.focusRegion === "list"
+              height: visible ? implicitHeight + Style.space(8) : 0
+
+              Rectangle {
+                width: parent.width
+                height: 1
+                color: Util.alpha(root.foreground, 0.12)
+              }
+
+              Item { width: 1; height: Style.space(4) }
+
+              Text {
+                width: parent.width
+                text: root.selectedEvent ? root.selectedEvent.title : ""
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                elide: Text.ElideRight
+              }
+
+              Text {
+                width: parent.width
+                text: {
+                  if (!root.selectedEvent) return ""
+                  var parts = [Khal.rangeLabel(root.selectedEvent),
+                    root.selectedEvent.calendar]
+                  if (root.selectedEvent.location) parts.push(root.selectedEvent.location)
+                  if (root.selectedEvent.repeats) parts.push("repeats")
+                  return parts.join("  ·  ")
+                }
+                textFormat: Text.PlainText
+                color: root.secondary
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+
+              Text {
+                width: parent.width
+                visible: text !== ""
+                text: root.selectedEvent && root.selectedEvent.description
+                  ? root.selectedEvent.description : ""
+                textFormat: Text.PlainText
+                color: root.secondary
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+                maximumLineCount: 4
+                elide: Text.ElideRight
               }
             }
 
@@ -1205,7 +1283,9 @@ Item {
           Text {
             text: root.pendingDelete.indexOf("feed:") === 0
               ? "It stops syncing. The events already downloaded stay on disk."
-              : "The .ics file is removed. This cannot be undone."
+              : (root.selectedEvent && root.selectedEvent.repeats
+                ? "This event repeats. Every occurrence goes with it, and it cannot be undone."
+                : "The .ics file is removed. This cannot be undone.")
             color: root.secondary
             font.family: Style.font.family
             font.pixelSize: Style.font.caption

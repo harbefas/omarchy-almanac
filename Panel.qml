@@ -888,10 +888,14 @@ Panel {
             Text {
               visible: root.selectedEvents.length === 0
               width: parent.width
-              text: "No events"
+              text: root.service && root.service.error !== ""
+                ? "Could not read the calendar"
+                : "No events"
+              textFormat: Text.PlainText
               color: Qt.darker(root.contentForeground, 2.2)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
             }
 
             // Only this list scrolls. Its cap is whatever room is actually

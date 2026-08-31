@@ -9,6 +9,18 @@
 
 set -euo pipefail
 
+require() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "$1 is not installed or not on PATH" >&2
+    exit 127
+  }
+}
+
+# A missing khal used to leave an empty JSON array on stdout, which the panel
+# could not tell apart from a day with nothing on it.
+require khal
+require jq
+
 filters="${KHAL_FILTERS:-$HOME/.config/omarchy/khal-filters.json}"
 
 to_khal() {
@@ -20,7 +32,8 @@ start_khal=$(to_khal "$1")
 end_khal=$(to_khal "$2")
 
 fields=(--json start-date --json start-time --json end-date --json end-time
-  --json title --json calendar --json uid --json location --json description)
+  --json title --json calendar --json uid --json location --json description
+  --json repeat-symbol)
 
 # khal list prints one JSON array per day in the range, so the output is a
 # stream of arrays rather than one document: -s/add flattens it.
@@ -41,7 +54,8 @@ khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null |
         calendar: .calendar,
         uid: .uid,
         location: .location,
-        description: .description
+        description: .description,
+        repeats: (.["repeat-symbol"] != "")
       })
     | unique
     | sort_by(.date, .time)

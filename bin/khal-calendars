@@ -5,11 +5,20 @@
 
 set -euo pipefail
 
+require() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "$1 is not installed or not on PATH" >&2
+    exit 127
+  }
+}
+
+require jq
+
 config="${KHAL_CONFIG:-$HOME/.config/khal/config}"
 
 [ -r "$config" ] || {
-  echo '[]'
-  exit 0
+  echo "khal config not found at $config" >&2
+  exit 66
 }
 
 awk '

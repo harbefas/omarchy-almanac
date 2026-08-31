@@ -64,6 +64,16 @@ Item {
   // leave the grid showing the month before last.
   property bool refetch: false
 
+  // A read that failed is not an empty calendar. Without this the panel drew
+  // "No events" whether khal had nothing to say or was not installed at all.
+  property string error: ""
+
+  function noteFailure(code, message) {
+    if (code === 0) return false
+    error = message !== "" ? message : "a helper in bin/ exited with " + code
+    return true
+  }
+
   function setRange(first, last) {
     if (first === rangeStart && last === rangeEnd) return
     rangeStart = first
@@ -84,6 +94,8 @@ Item {
 
   Process {
     id: eventsProc
+    property string errorText: ""
+
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -93,8 +105,14 @@ Item {
         root.loading = false
       }
     }
-    onExited: {
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: eventsProc.errorText = String(text || "").trim()
+    }
+    onExited: function(exitCode) {
       root.loading = false
+      if (!root.noteFailure(exitCode, eventsProc.errorText)) root.error = ""
+      eventsProc.errorText = ""
       if (root.refetch) {
         root.refetch = false
         root.refreshEvents()
@@ -115,9 +133,19 @@ Item {
   Process {
     id: calendarsProc
     command: [root.helper("khal-calendars")]
+    property string errorText: ""
+
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.calendars = Khal.parseJson(text, [])
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: calendarsProc.errorText = String(text || "").trim()
+    }
+    onExited: function(exitCode) {
+      root.noteFailure(exitCode, calendarsProc.errorText)
+      calendarsProc.errorText = ""
     }
   }
 
@@ -131,9 +159,19 @@ Item {
   Process {
     id: feedsProc
     command: [root.helper("khal-feeds"), "list"]
+    property string errorText: ""
+
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.feeds = Khal.parseJson(text, [])
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: feedsProc.errorText = String(text || "").trim()
+    }
+    onExited: function(exitCode) {
+      root.noteFailure(exitCode, feedsProc.errorText)
+      feedsProc.errorText = ""
     }
   }
 
