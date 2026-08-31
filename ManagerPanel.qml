@@ -356,7 +356,16 @@ Item {
       if (shortcutHintsActive) shortcutHintsActive = false
       else if (pendingDelete !== "") pendingDelete = ""
       else if (formMode !== "") formMode = ""
-      else if (query !== "") { query = ""; focusRegion = "grid" }
+      else if (query !== "" || focusRegion === "search") {
+        query = ""
+        focusRegion = "grid"
+        // The search box has to give focus up explicitly. It lives inside
+        // the key scope, so asking the scope to take focus back just hands
+        // it to the field again, and every key after Escape kept landing in
+        // the box.
+        searchField.focus = false
+        keyScope.forceActiveFocus()
+      }
       else close()
       return true
     }
@@ -809,6 +818,7 @@ Item {
               Keys.onEscapePressed: {
                 text = ""
                 root.focusRegion = "grid"
+                focus = false
                 keyScope.forceActiveFocus()
               }
 
