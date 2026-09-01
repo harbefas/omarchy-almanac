@@ -195,6 +195,22 @@ check "a delete removes the file" '0' "$(find "$work/cal/archive" -type f | wc -
 "$root/bin/khal-event-edit" probe-1 --delete >/dev/null 2>&1
 check "a uid that is gone is refused" '1' "$?"
 
+# An .ics is written by whoever publishes the feed, and one event per file is
+# the format, so a file far past any real event is skipped rather than parsed.
+# The uid lives only in the oversize file, so finding it would mean the cap
+# did not bite.
+{
+  printf 'BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:huge-1\nSUMMARY:Huge\nX-PAD:'
+  head -c 5000000 /dev/zero | tr '\0' 'x'
+  printf '\nDTSTART;VALUE=DATE:20260920\nDTEND;VALUE=DATE:20260921\nEND:VEVENT\nEND:VCALENDAR\n'
+} >"$work/cal/work/huge.ics"
+
+"$root/bin/khal-event-edit" huge-1 --title Renamed >/dev/null 2>&1
+check "an oversize .ics is not searched" '1' "$?"
+check "the oversize file is left alone" '1' \
+  "$(find "$work/cal/work" -name 'huge.ics' | wc -l)"
+rm "$work/cal/work/huge.ics"
+
 unset KHAL_CONFIG
 
 # ---- khal-feeds

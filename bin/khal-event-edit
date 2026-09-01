@@ -33,10 +33,26 @@ import icalendar
 HERE = Path(__file__).resolve().parent
 
 
+# Ceilings, for the same reason the panel has them: an .ics is written by
+# whoever publishes the feed, and neither a runaway file nor a runaway helper
+# gets to decide how much memory this takes to read one event.
+MAX_HELPER_OUTPUT = 1024 * 1024
+MAX_ICS_BYTES = 4 * 1024 * 1024
+
+
 def calendars():
-    out = subprocess.run(
-        [str(HERE / "khal-calendars")], capture_output=True, text=True, check=True
-    ).stdout
+    process = subprocess.Popen(
+        [str(HERE / "khal-calendars")], stdout=subprocess.PIPE, text=True
+    )
+    out = process.stdout.read(MAX_HELPER_OUTPUT + 1)
+    over = len(out) > MAX_HELPER_OUTPUT
+    if over:
+        process.kill()
+    process.stdout.close()
+    if process.wait() != 0 and not over:
+        sys.exit("khal-calendars failed")
+    if over:
+        sys.exit("khal-calendars produced more output than can be read")
     return json.loads(out)
 
 
@@ -47,6 +63,10 @@ def find_event(uid):
         if not root.is_dir():
             continue
         for path in root.glob("*.ics"):
+            # One event per file is the format; anything this size is not an
+            # event, and parsing it would cost more than the whole search.
+            if path.stat().st_size > MAX_ICS_BYTES:
+                continue
             try:
                 cal_obj = icalendar.Calendar.from_ical(path.read_bytes())
             except ValueError:
