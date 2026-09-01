@@ -23,8 +23,10 @@ Usage:
 import argparse
 import json
 import os
+import select
 import subprocess
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -38,21 +40,64 @@ HERE = Path(__file__).resolve().parent
 # gets to decide how much memory this takes to read one event.
 MAX_HELPER_OUTPUT = 1024 * 1024
 MAX_ICS_BYTES = 4 * 1024 * 1024
+# The helper reads a config that can live on a mount that has stopped
+# answering, where it would neither finish nor say anything for the byte
+# ceiling to catch. Overridable so the tests can watch it bite.
+MAX_HELPER_SECONDS = float(os.environ.get("KHAL_HELPER_TIMEOUT", 30))
 
 
 def calendars():
-    process = subprocess.Popen(
-        [str(HERE / "khal-calendars")], stdout=subprocess.PIPE, text=True
-    )
-    out = process.stdout.read(MAX_HELPER_OUTPUT + 1)
+    deadline = time.monotonic() + MAX_HELPER_SECONDS
+    # Binary, so the ceiling is counted in the bytes actually read rather than
+    # in characters a partial decode would have to guess at.
+    process = subprocess.Popen([str(HERE / "khal-calendars")], stdout=subprocess.PIPE)
+
+    chunks = []
+    read_so_far = 0
+    over = False
+    timed_out = False
+
+    while read_so_far <= MAX_HELPER_OUTPUT:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+
+        ready, _, _ = select.select([process.stdout], [], [], remaining)
+        if not ready:
+            timed_out = True
+            break
+
+        chunk = os.read(process.stdout.fileno(), MAX_HELPER_OUTPUT + 1 - read_so_far)
+        if not chunk:
+            break
+
+        chunks.append(chunk)
+        read_so_far += len(chunk)
+
+    out = b"".join(chunks).decode("utf-8", "replace")
     over = len(out) > MAX_HELPER_OUTPUT
-    if over:
+
+    if over or timed_out:
         process.kill()
-    process.stdout.close()
-    if process.wait() != 0 and not over:
-        sys.exit("khal-calendars failed")
-    if over:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        process.stdout.close()
+        if timed_out:
+            sys.exit(f"khal-calendars did not finish within {MAX_HELPER_SECONDS:g}s")
         sys.exit("khal-calendars produced more output than can be read")
+
+    process.stdout.close()
+    try:
+        status = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        process.kill()
+        sys.exit(f"khal-calendars did not finish within {MAX_HELPER_SECONDS:g}s")
+    if status != 0:
+        sys.exit("khal-calendars failed")
+
     return json.loads(out)
 
 

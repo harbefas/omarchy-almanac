@@ -20,6 +20,7 @@ require() {
 # could not tell apart from a day with nothing on it.
 require khal
 require jq
+require timeout
 
 filters="${KHAL_FILTERS:-$HOME/.config/omarchy/khal-filters.json}"
 
@@ -43,19 +44,47 @@ fields=(--json start-date --json start-time --json end-date --json end-time
 # bites on a feed that has stopped making sense.
 max_events=2000
 max_field=400
+# The raw stream is bounded too, because the caps above can only be applied to
+# what has already been read. khal's own output is several times the size of
+# the JSON emitted here, so this sits well above a real month of a real
+# calendar and only bites on a store that has stopped making sense.
+max_bytes=$((8 * 1024 * 1024))
+# A store on a stalled network mount can leave khal running forever while
+# saying nothing, which no byte ceiling can catch. Overridable so the tests
+# can watch the deadline bite without waiting on it.
+max_seconds="${KHAL_TIMEOUT:-30}"
 
-# khal list prints one JSON array per day in the range, so the output is a
-# stream of arrays rather than one document: -s/add flattens it.
-khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null |
-  jq -c -s --slurpfile f <(cat "$filters" 2>/dev/null || echo '{}') \
-    --argjson maxEvents "$max_events" --argjson maxField "$max_field" '
+status_file=$(mktemp)
+# Guarded on the pid: the pipeline below runs its first stage in a subshell,
+# which inherits this trap and would delete the status file on its way out,
+# before the status it just wrote there could be read.
+main_pid=$BASHPID
+trap '[ "$BASHPID" = "$main_pid" ] && rm -f "$status_file"' EXIT
+
+# khal prints one JSON array per day in the range, so the output is a stream
+# of arrays rather than one document. Each day is filtered and cut down as it
+# arrives, and the event ceiling is applied to that stream, so nothing is
+# aggregated until both the bytes and the number of events are already bounded.
+# Only then is the bounded set slurped to be deduplicated and sorted, which
+# cannot be done a day at a time.
+# pipefail is off for this one pipeline: reaching a ceiling closes the pipe
+# under whatever is upstream of it, and that SIGPIPE is the bound working, not
+# a failure. The statuses that do matter are read back individually below.
+set +o pipefail
+{
+  timeout "$max_seconds" khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null ||
+    echo $? >"$status_file"
+} |
+  head -c "$max_bytes" |
+  jq -c --slurpfile f <(cat "$filters" 2>/dev/null || echo '{}') \
+    --argjson maxField "$max_field" '
     ($f[0] // {}) as $filters
-    | (add // [])
-    | map(select(
+    | .[]
+    | select(
         ($filters[.calendar] // "") as $re
         | $re == "" or (.title | test($re))
-      ))
-    | map({
+      )
+    | {
         date: (.["start-date"] | split("/") | .[2] + "-" + .[1] + "-" + .[0]),
         time: .["start-time"],
         endDate: (.["end-date"] | split("/") | .[2] + "-" + .[1] + "-" + .[0]),
@@ -78,8 +107,36 @@ khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null |
           | .[0:$maxField]
         ),
         repeats: (.["repeat-symbol"] != "")
-      })
-    | unique
-    | sort_by(.date, .time)
-    | .[0:$maxEvents]
-  '
+      }
+  ' |
+  head -n "$max_events" |
+  jq -c -s 'unique | sort_by(.date, .time)'
+pipeline_status=("${PIPESTATUS[@]}")
+set -o pipefail
+
+# Whether the events came out in one piece. Upstream stages are allowed to be
+# cut short by a ceiling, but the stage that prints the document is not.
+if [ "${pipeline_status[4]}" -ne 0 ]; then
+  echo "could not assemble the event list (jq exited ${pipeline_status[4]})" >&2
+  exit "${pipeline_status[4]}"
+fi
+
+# Reported after the fact: the events are streamed out as they are read, so
+# there is nothing to hold back. A ceiling cutting the stream short closes the
+# pipe under khal, and that SIGPIPE is the expected end of a bounded read
+# rather than a failure of the calendar.
+# Only written when khal ends badly, so empty is the ordinary case: it either
+# finished cleanly or was cut short by a ceiling downstream, which closes the
+# pipe under it and is the bound working rather than a failure.
+khal_status=$(cat "$status_file")
+case "${khal_status:-0}" in
+0 | 141) ;;
+124)
+  echo "khal did not finish within ${max_seconds}s" >&2
+  exit 124
+  ;;
+*)
+  echo "khal exited $khal_status" >&2
+  exit "$khal_status"
+  ;;
+esac

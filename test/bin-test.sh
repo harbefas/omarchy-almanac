@@ -46,7 +46,7 @@ cat <<'JSON'
 JSON
 STUB
 chmod +x "$work/stub/khal"
-for cmd in jq bash env sed awk cat printf; do
+for cmd in jq bash env sed awk cat printf timeout mktemp rm head; do
   ln -sf "$(command -v "$cmd")" "$work/stub/$cmd"
 done
 
@@ -82,7 +82,7 @@ check "a missing khal is an error, not an empty day" '127' "$?"
 # so the helper caps what it can hand over. A feed cannot decide either how
 # many events the shell holds or how long any one string in them is.
 
-for cmd in seq head tr; do ln -sf "$(command -v "$cmd")" "$work/stub/$cmd"; done
+for cmd in seq tr; do ln -sf "$(command -v "$cmd")" "$work/stub/$cmd"; done
 
 cat >"$work/stub/khal" <<'STUB'
 #!/usr/bin/env bash
@@ -100,6 +100,7 @@ chmod +x "$work/stub/khal"
 
 out=$(PATH="$work/stub" KHAL_FILTERS="$work/no-filters.json" \
   "$root/bin/khal-events" 2026-08-31 2026-08-31)
+check "capping the event list is not a failure" '0' "$?"
 check "the event list is capped" '2000' "$(jq -c 'length' <<<"$out")"
 
 cat >"$work/stub/khal" <<'STUB'
@@ -327,6 +328,87 @@ check "the overflow is named" 'true' "$(jq -c '.truncated' <<<"$out")"
 # unbounded string the old capture_output would have built.
 check "the captured output is bounded" 'true' \
   "$(jq -c '(.output | length) < 70000' <<<"$out")"
+
+# ---- khal-feeds sync: a producer that goes quiet and never finishes
+#
+# The byte ceiling only bounds a producer that talks. A remote that accepts the
+# connection and then says nothing leaves vdirsyncer waiting on it, and the
+# panel waiting on vdirsyncer, so the wall clock is bounded too.
+
+cat >"$work/sync-stub/vdirsyncer" <<'STUB'
+#!/usr/bin/env bash
+# Says one thing, then hangs forever without closing its stdout.
+echo "connecting"
+sleep 600
+STUB
+chmod +x "$work/sync-stub/vdirsyncer"
+ln -sf "$(command -v sleep)" "$work/sync-stub/sleep"
+
+start=$(date +%s)
+out=$(PATH="$work/sync-stub:$PATH" VDIRSYNCER_TIMEOUT=1 timeout 30 "$root/bin/khal-feeds" sync)
+check "a hung sync still prints one JSON document" '0' "$?"
+elapsed=$(($(date +%s) - start))
+check "a hung sync gives up on the deadline" 'true' "$([ "$elapsed" -lt 15 ] && echo true || echo false)"
+check "the hung sync is reported as a failure" 'false' "$(jq -c '.ok' <<<"$out")"
+check "the deadline is named" 'true' "$(jq -c '.timedOut' <<<"$out")"
+check "what it said before hanging is kept" 'true' \
+  "$(jq -c '.output | contains("connecting")' <<<"$out")"
+
+# ---- khal-events: bounds that hold before anything is aggregated
+
+cat >"$work/stub/khal" <<'STUB'
+#!/usr/bin/env bash
+# One array per day, forever: the events can never be counted without a
+# ceiling on the bytes, because the stream has no end to count up to.
+while :; do
+  printf '[{"start-date": "31/08/2026", "start-time": "13:30", "end-date": "31/08/2026", "end-time": "15:15", "title": "Flood", "calendar": "flood", "uid": "u1", "location": "", "description": "", "repeat-symbol": ""}]\n'
+done
+STUB
+chmod +x "$work/stub/khal"
+
+start=$(date +%s)
+out=$(PATH="$work/stub" KHAL_FILTERS="$work/no-filters.json" \
+  timeout 60 "$root/bin/khal-events" 2026-08-31 2026-08-31)
+# Hitting a ceiling closes a pipe upstream. That is the bound doing its job,
+# so it must not surface as a failed run.
+check "an endless calendar is not reported as a failure" '0' "$?"
+elapsed=$(($(date +%s) - start))
+check "an endless calendar still terminates" 'true' "$([ "$elapsed" -lt 45 ] && echo true || echo false)"
+check "an endless calendar still parses" 'ok' \
+  "$(jq -e . >/dev/null 2>&1 <<<"$out" && echo ok || echo broken)"
+check "an endless calendar is cut to the event cap" 'true' \
+  "$(jq -c 'length <= 2000' <<<"$out")"
+
+cat >"$work/stub/khal" <<'STUB'
+#!/usr/bin/env bash
+# Accepts the call and then says nothing, which no byte ceiling can catch.
+sleep 600
+STUB
+chmod +x "$work/stub/khal"
+ln -sf "$(command -v sleep)" "$work/stub/sleep"
+ln -sf "$(command -v date)" "$work/stub/date"
+
+start=$(date +%s)
+PATH="$work/stub" KHAL_FILTERS="$work/no-filters.json" KHAL_TIMEOUT=1 \
+  timeout 30 "$root/bin/khal-events" 2026-08-31 2026-08-31 >/dev/null 2>&1
+check "a hung khal is an error, not an empty day" '124' "$?"
+elapsed=$(($(date +%s) - start))
+check "a hung khal gives up on the deadline" 'true' "$([ "$elapsed" -lt 15 ] && echo true || echo false)"
+
+# ---- khal-event-edit: the helper it shells out to is bounded the same way
+#
+# A config on a mount that has stopped answering is the shape of this: the
+# read blocks, so khal-calendars never finishes and never says anything. A
+# fifo nobody writes to is that mount, without needing one.
+
+mkfifo "$work/hanging-config"
+start=$(date +%s)
+KHAL_CONFIG="$work/hanging-config" KHAL_HELPER_TIMEOUT=1 \
+  timeout 30 "$root/bin/khal-event-edit" probe-1 --title Renamed >/dev/null 2>&1
+check "a hung calendar helper is an error" '1' "$?"
+elapsed=$(($(date +%s) - start))
+check "a hung calendar helper gives up on the deadline" 'true' \
+  "$([ "$elapsed" -lt 15 ] && echo true || echo false)"
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d failing\n' "$failures" >&2

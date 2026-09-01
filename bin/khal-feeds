@@ -23,8 +23,10 @@ import argparse
 import json
 import os
 import re
+import select
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -255,50 +257,114 @@ def cmd_remove(args):
 # not decide how much of that memory it gets.
 MAX_SYNC_OUTPUT = 64 * 1024
 
+# A byte ceiling only bounds a process that talks. A remote that accepts the
+# connection and then says nothing leaves vdirsyncer waiting on it for as long
+# as it cares to wait, and the panel waiting on vdirsyncer, so the wall clock
+# is bounded as well. Overridable so the tests can watch it bite.
+MAX_SYNC_SECONDS = float(os.environ.get("VDIRSYNCER_TIMEOUT", 120))
 
-def run_bounded(command):
-    """Run a command, reading at most MAX_SYNC_OUTPUT characters of its output.
 
-    Characters rather than bytes because the stream is decoded on the way in,
-    and a character is never fewer bytes than one, so the ceiling holds either
-    way it is counted.
+def kill_and_reap(process):
+    process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
-    Past the ceiling the process is killed rather than drained: there is
+
+def run_bounded(command, timeout=None):
+    """Run a command under a byte ceiling and a deadline.
+
+    At most MAX_SYNC_OUTPUT bytes are read, and the whole run is given
+    MAX_SYNC_SECONDS.
+
+    Past either limit the process is killed rather than drained: there is
     nothing useful to say about a sync that will not stop talking, and
     draining it politely is exactly the unbounded read being avoided.
+
+    Returns (output, truncated, timed_out, returncode).
     """
+    deadline = time.monotonic() + (MAX_SYNC_SECONDS if timeout is None else timeout)
+    # Binary, so the ceiling is counted in the bytes actually read rather than
+    # in characters a partial decode would have to guess at.
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
     )
-    output = process.stdout.read(MAX_SYNC_OUTPUT + 1)
-    truncated = len(output) > MAX_SYNC_OUTPUT
-    if truncated:
+
+    chunks = []
+    read_so_far = 0
+    truncated = False
+    timed_out = False
+
+    # Read what is there as it arrives rather than blocking on a full buffer,
+    # so a producer that goes quiet is measured by the clock and not by how
+    # much it has said.
+    while read_so_far <= MAX_SYNC_OUTPUT:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+
+        ready, _, _ = select.select([process.stdout], [], [], remaining)
+        if not ready:
+            timed_out = True
+            break
+
+        chunk = os.read(process.stdout.fileno(), MAX_SYNC_OUTPUT + 1 - read_so_far)
+        if not chunk:  # producer closed its end
+            break
+
+        chunks.append(chunk)
+        read_so_far += len(chunk)
+
+    output = b"".join(chunks).decode("utf-8", "replace")
+    if len(output) > MAX_SYNC_OUTPUT:
+        truncated = True
         output = output[:MAX_SYNC_OUTPUT]
-        process.kill()
+
+    if truncated or timed_out:
+        kill_and_reap(process)
+        process.stdout.close()
+        return output.strip(), truncated, timed_out, process.returncode
+
     process.stdout.close()
-    process.wait()
-    return output.strip(), truncated, process.returncode
+    try:
+        process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        kill_and_reap(process)
+        timed_out = True
+
+    return output.strip(), truncated, timed_out, process.returncode
 
 
 def cmd_sync(args):
     pairs = [f"{validate_name(args.name)}_pair"] if args.name else []
     # discover writes to its own stdout, which is this helper's stdout, which
     # is the JSON document the panel parses. It is read and dropped.
-    run_bounded(["vdirsyncer", "discover", *pairs])
-    output, truncated, code = run_bounded(["vdirsyncer", "sync", *pairs])
+    # Both runs are bounded, and each gets its own budget: discover talks to
+    # the same remotes sync does, so a remote that can hang one can hang both.
+    _, _, discover_timed_out, _ = run_bounded(["vdirsyncer", "discover", *pairs])
+    output, truncated, timed_out, code = run_bounded(["vdirsyncer", "sync", *pairs])
+    timed_out = timed_out or discover_timed_out
+
     if truncated:
         output = (
-            f"sync produced more than {MAX_SYNC_OUTPUT} characters of output and "
+            f"sync produced more than {MAX_SYNC_OUTPUT} bytes of output and "
             f"was stopped; the first part of it follows\n\n" + output
+        )
+    elif timed_out:
+        output = (
+            f"sync did not finish within {MAX_SYNC_SECONDS:g}s and was stopped; "
+            f"whatever it had said by then follows\n\n" + output
         )
     print(
         json.dumps(
             {
-                "ok": code == 0 and not truncated,
+                "ok": code == 0 and not truncated and not timed_out,
                 "truncated": truncated,
+                "timedOut": timed_out,
                 "output": output,
             }
         )
