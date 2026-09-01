@@ -249,17 +249,57 @@ def cmd_remove(args):
     print(json.dumps({"ok": True, "removed": name, "orphaned": orphaned}))
 
 
+# vdirsyncer is as talkative as the servers it is pointed at, and its output
+# is quoted back into the JSON this prints, which the shell reads into memory
+# and keeps. A feed that answers with a megabyte of complaints per item must
+# not decide how much of that memory it gets.
+MAX_SYNC_OUTPUT = 64 * 1024
+
+
+def run_bounded(command):
+    """Run a command, reading at most MAX_SYNC_OUTPUT characters of its output.
+
+    Characters rather than bytes because the stream is decoded on the way in,
+    and a character is never fewer bytes than one, so the ceiling holds either
+    way it is counted.
+
+    Past the ceiling the process is killed rather than drained: there is
+    nothing useful to say about a sync that will not stop talking, and
+    draining it politely is exactly the unbounded read being avoided.
+    """
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    output = process.stdout.read(MAX_SYNC_OUTPUT + 1)
+    truncated = len(output) > MAX_SYNC_OUTPUT
+    if truncated:
+        output = output[:MAX_SYNC_OUTPUT]
+        process.kill()
+    process.stdout.close()
+    process.wait()
+    return output.strip(), truncated, process.returncode
+
+
 def cmd_sync(args):
     pairs = [f"{validate_name(args.name)}_pair"] if args.name else []
-    subprocess.run(["vdirsyncer", "discover", *pairs], check=False)
-    result = subprocess.run(
-        ["vdirsyncer", "sync", *pairs], capture_output=True, text=True, check=False
-    )
+    # discover writes to its own stdout, which is this helper's stdout, which
+    # is the JSON document the panel parses. It is read and dropped.
+    run_bounded(["vdirsyncer", "discover", *pairs])
+    output, truncated, code = run_bounded(["vdirsyncer", "sync", *pairs])
+    if truncated:
+        output = (
+            f"sync produced more than {MAX_SYNC_OUTPUT} characters of output and "
+            f"was stopped; the first part of it follows\n\n" + output
+        )
     print(
         json.dumps(
             {
-                "ok": result.returncode == 0,
-                "output": (result.stderr + result.stdout).strip(),
+                "ok": code == 0 and not truncated,
+                "truncated": truncated,
+                "output": output,
             }
         )
     )

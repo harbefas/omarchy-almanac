@@ -74,6 +74,31 @@ Item {
     return true
   }
 
+  // A producer stopped for running over its ceiling exits on a signal with
+  // nothing left on stderr, so the overflow has to name itself — otherwise the
+  // panel reports a bare exit code for the one failure it can explain exactly.
+  function overflowed(proc) {
+    return proc.stdout.overflowed || proc.stderr.overflowed
+  }
+
+  function noteOverflow(proc) {
+    if (!overflowed(proc)) return false
+    error = "a helper in bin/ wrote more than " + Math.floor(proc.stdout.limit / 1024)
+      + " KB and was stopped"
+    return true
+  }
+
+  // Both streams start fresh on every run; a Process is reused, and the
+  // previous run's bytes are not part of this one's budget.
+  function resetReaders(proc) {
+    proc.stdout.reset()
+    proc.stderr.reset()
+  }
+
+  function errorTextOf(proc) {
+    return String(proc.stderr.text || "").trim()
+  }
+
   function setRange(first, last) {
     if (first === rangeStart && last === rangeEnd) return
     rangeStart = first
@@ -94,25 +119,20 @@ Item {
 
   Process {
     id: eventsProc
-    property string errorText: ""
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var list = Khal.parseJson(text, [])
-        root.events = list
-        root.eventsByDay = Khal.groupByDay(list, root.rangeStart, root.rangeEnd)
-        root.loading = false
-      }
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: eventsProc.errorText = String(text || "").trim()
-    }
+    stdout: BoundedReader { process: eventsProc }
+    stderr: BoundedReader { process: eventsProc; limit: 64 * 1024 }
+
+    onStarted: root.resetReaders(eventsProc)
     onExited: function(exitCode) {
       root.loading = false
-      if (!root.noteFailure(exitCode, eventsProc.errorText)) root.error = ""
-      eventsProc.errorText = ""
+      if (root.noteOverflow(eventsProc)) return
+      if (!root.noteFailure(exitCode, root.errorTextOf(eventsProc))) {
+        root.error = ""
+        var list = Khal.parseJson(eventsProc.stdout.text, [])
+        root.events = list
+        root.eventsByDay = Khal.groupByDay(list, root.rangeStart, root.rangeEnd)
+      }
       if (root.refetch) {
         root.refetch = false
         root.refreshEvents()
@@ -133,19 +153,15 @@ Item {
   Process {
     id: calendarsProc
     command: [root.helper("khal-calendars")]
-    property string errorText: ""
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.calendars = Khal.parseJson(text, [])
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: calendarsProc.errorText = String(text || "").trim()
-    }
+    stdout: BoundedReader { process: calendarsProc; limit: 1024 * 1024 }
+    stderr: BoundedReader { process: calendarsProc; limit: 64 * 1024 }
+
+    onStarted: root.resetReaders(calendarsProc)
     onExited: function(exitCode) {
-      root.noteFailure(exitCode, calendarsProc.errorText)
-      calendarsProc.errorText = ""
+      if (root.noteOverflow(calendarsProc)) return
+      if (!root.noteFailure(exitCode, root.errorTextOf(calendarsProc)))
+        root.calendars = Khal.parseJson(calendarsProc.stdout.text, [])
     }
   }
 
@@ -159,19 +175,15 @@ Item {
   Process {
     id: feedsProc
     command: [root.helper("khal-feeds"), "list"]
-    property string errorText: ""
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.feeds = Khal.parseJson(text, [])
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: feedsProc.errorText = String(text || "").trim()
-    }
+    stdout: BoundedReader { process: feedsProc; limit: 1024 * 1024 }
+    stderr: BoundedReader { process: feedsProc; limit: 64 * 1024 }
+
+    onStarted: root.resetReaders(feedsProc)
     onExited: function(exitCode) {
-      root.noteFailure(exitCode, feedsProc.errorText)
-      feedsProc.errorText = ""
+      if (root.noteOverflow(feedsProc)) return
+      if (!root.noteFailure(exitCode, root.errorTextOf(feedsProc)))
+        root.feeds = Khal.parseJson(feedsProc.stdout.text, [])
     }
   }
 
@@ -229,21 +241,19 @@ Item {
     // The helpers report failure on stderr in plain prose ("calendar 'x' is
     // readonly"), which is the message worth putting in front of someone —
     // stdout only ever carries the success envelope.
-    property string errorText: ""
+    stdout: BoundedReader { process: mutationProc; limit: 1024 * 1024 }
+    stderr: BoundedReader { process: mutationProc; limit: 64 * 1024 }
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.status = text
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: mutationProc.errorText = String(text || "").trim()
-    }
+    onStarted: root.resetReaders(mutationProc)
     onExited: function(exitCode) {
       root.busy = false
+      if (root.noteOverflow(mutationProc)) {
+        root.mutated(false, root.error)
+        return
+      }
       var ok = exitCode === 0
-      root.mutated(ok, ok ? "" : (mutationProc.errorText || "failed"))
-      mutationProc.errorText = ""
+      if (ok) root.status = mutationProc.stdout.text
+      root.mutated(ok, ok ? "" : (root.errorTextOf(mutationProc) || "failed"))
       if (ok) {
         root.refreshEvents()
         root.refreshCalendars()

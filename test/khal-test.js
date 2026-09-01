@@ -5,8 +5,8 @@ const fs = require("fs");
 
 const K = {};
 new Function("exports", fs.readFileSync(process.argv[2], "utf8") + ";" +
-  "Object.assign(exports, { parseJson, clean, sanitize, isoDate, isoDateTime," +
-  " groupByDay, addDays, filterEvents, timeLabel, rangeLabel });")(K);
+  "Object.assign(exports, { parseJson, appendBounded, clean, sanitize, isoDate," +
+  " isoDateTime, groupByDay, addDays, filterEvents, timeLabel, rangeLabel });")(K);
 
 let failures = 0;
 
@@ -30,6 +30,24 @@ check("null degrades", K.parseJson("null", []), []);
 check("non-strings pass through", K.parseJson('[{"repeats":true,"n":3}]', [])[0],
   { repeats: true, n: 3 });
 check("nested strings are cleaned", K.parseJson('[{"a":{"b":"x\\ty"}}]', [])[0].a.b, "x y");
+
+// ---- appendBounded: the ceiling BoundedReader enforces while a helper is
+//      still writing. Returning null is what tells the reader to kill the
+//      producer, so "null" here means "the process gets stopped".
+
+check("a chunk under the limit accumulates", K.appendBounded("ab", "cd", 10), "abcd");
+check("the budget is cumulative, not per chunk",
+  K.appendBounded("x".repeat(9), "yy", 10), null);
+check("landing exactly on the limit is allowed",
+  K.appendBounded("x".repeat(8), "yy", 10), "x".repeat(8) + "yy");
+check("one oversize chunk on an empty buffer is refused",
+  K.appendBounded("", "x".repeat(11), 10), null);
+check("an empty chunk is not an overflow", K.appendBounded("abc", "", 3), "abc");
+check("a missing chunk is treated as empty", K.appendBounded("abc", null, 3), "abc");
+// Whatever the reader accumulated before the overflow is dropped rather than
+// handed on: half a JSON document parses to nothing anyway, and keeping it
+// would leave the memory the ceiling exists to reclaim.
+check("a dropped buffer parses to the fallback", K.parseJson("", []), []);
 
 // ---- dates
 

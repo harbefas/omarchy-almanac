@@ -130,6 +130,16 @@ a Buy Me a Coffee link, which for a fixture is the entire description, so it
 filled the detail panel on every match. `khal-events` cuts it. The `.ics` on
 disk is untouched and comes back whole on the next sync.
 
+## What a feed is allowed to cost
+
+The shell that draws the bar never restarts, so anything read into it is held
+for the length of the session. Every helper caps what it hands over — 2000
+events, 400 characters a field, 500 calendars, 64 KB of `vdirsyncer` chatter —
+and the panel reads those pipes in chunks with a ceiling of its own rather
+than buffering a whole stream first. A producer that goes over is stopped and
+reported as a failure, not truncated into something that would look like an
+empty calendar.
+
 ## How it talks to khal
 
 Everything goes through the scripts in `bin/`, so the whole data layer can be

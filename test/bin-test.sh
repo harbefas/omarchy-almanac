@@ -76,6 +76,60 @@ rm "$work/stub/khal"
 PATH="$work/stub" "$root/bin/khal-events" 2026-08-31 2026-09-01 >/dev/null 2>&1
 check "a missing khal is an error, not an empty day" '127' "$?"
 
+# ---- khal-events: producer ceilings
+#
+# The panel reads whatever comes out of here into a shell that never restarts,
+# so the helper caps what it can hand over. A feed cannot decide either how
+# many events the shell holds or how long any one string in them is.
+
+for cmd in seq head tr; do ln -sf "$(command -v "$cmd")" "$work/stub/$cmd"; done
+
+cat >"$work/stub/khal" <<'STUB'
+#!/usr/bin/env bash
+# 3000 events on one day, one of them carrying a description far past the cap.
+{
+  printf '['
+  for i in $(seq 1 3000); do
+    [ "$i" -gt 1 ] && printf ','
+    printf '{"start-date": "31/08/2026", "start-time": "13:30", "end-date": "31/08/2026", "end-time": "15:15", "title": "Event %s", "calendar": "flood", "uid": "u%s", "location": "", "description": "", "repeat-symbol": ""}' "$i" "$i"
+  done
+  printf ']\n'
+}
+STUB
+chmod +x "$work/stub/khal"
+
+out=$(PATH="$work/stub" KHAL_FILTERS="$work/no-filters.json" \
+  "$root/bin/khal-events" 2026-08-31 2026-08-31)
+check "the event list is capped" '2000' "$(jq -c 'length' <<<"$out")"
+
+cat >"$work/stub/khal" <<'STUB'
+#!/usr/bin/env bash
+printf '[{"start-date": "31/08/2026", "start-time": "13:30", "end-date": "31/08/2026", "end-time": "15:15", "title": "%s", "calendar": "flood", "uid": "u1", "location": "%s", "description": "%s", "repeat-symbol": ""}]\n' \
+  "$(head -c 5000 /dev/zero | tr '\0' 'T')" \
+  "$(head -c 5000 /dev/zero | tr '\0' 'L')" \
+  "$(head -c 5000 /dev/zero | tr '\0' 'D')"
+STUB
+chmod +x "$work/stub/khal"
+
+out=$(PATH="$work/stub" KHAL_FILTERS="$work/no-filters.json" \
+  "$root/bin/khal-events" 2026-08-31 2026-08-31)
+check "a runaway title is cut to the cap" '400' "$(jq -c '.[0].title | length' <<<"$out")"
+check "a runaway location is cut to the cap" '400' "$(jq -c '.[0].location | length' <<<"$out")"
+check "a runaway description is cut to the cap" '400' \
+  "$(jq -c '.[0].description | length' <<<"$out")"
+
+# ---- khal-calendars: the same ceiling on the config side
+
+{
+  echo '[calendars]'
+  for i in $(seq 1 600); do
+    printf '\n[[cal%s]]\npath = /tmp/cal%s/\ncolor = light blue\n' "$i" "$i"
+  done
+} >"$work/flood-khal-config"
+
+out=$(KHAL_CONFIG="$work/flood-khal-config" "$root/bin/khal-calendars")
+check "the calendar list is capped" '500' "$(jq -c 'length' <<<"$out")"
+
 # ---- khal-event-edit: moving between calendars is a file move
 #
 # No stub needed here: the helper reads the config and manipulates .ics files
@@ -223,6 +277,40 @@ check "a missing khal config leaves vdirsyncer untouched" '' \
 # so this one is the test's to clean up. Removing a feed deliberately leaves
 # a directory behind, which is why it is still here.
 rmdir "$HOME/.local/share/khal/calendars/sports_f1" 2>/dev/null
+
+# ---- khal-feeds sync: a producer that never stops talking
+#
+# vdirsyncer's output is quoted into the JSON this helper prints, and that
+# JSON is read into the shell. A sync that writes forever must be stopped by
+# the helper rather than drained, and the helper has to keep saying so in
+# valid JSON — a truncated document would be indistinguishable from a feed
+# with nothing to report.
+
+mkdir -p "$work/sync-stub"
+cat >"$work/sync-stub/vdirsyncer" <<'STUB'
+#!/usr/bin/env bash
+# Writes until it is killed. `discover` is just as noisy, which is the other
+# half of the test: none of it may reach the JSON on stdout.
+exec 2>&1
+while :; do
+  head -c 4096 /dev/zero | tr ' ' 'x'
+  echo
+done
+STUB
+chmod +x "$work/sync-stub/vdirsyncer"
+for cmd in bash env head tr jq; do
+  ln -sf "$(command -v "$cmd")" "$work/sync-stub/$cmd"
+done
+
+out=$(PATH="$work/sync-stub:$PATH" timeout 30 "$root/bin/khal-feeds" sync)
+check "an endless sync still prints one JSON document" '0' "$?"
+check "the document parses" 'ok' "$(jq -e . >/dev/null 2>&1 <<<"$out" && echo ok || echo broken)"
+check "the overflow is reported as a failure" 'false' "$(jq -c '.ok' <<<"$out")"
+check "the overflow is named" 'true' "$(jq -c '.truncated' <<<"$out")"
+# 64 KiB of output plus the sentence explaining the cut, and nothing like the
+# unbounded string the old capture_output would have built.
+check "the captured output is bounded" 'true' \
+  "$(jq -c '(.output | length) < 70000' <<<"$out")"
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d failing\n' "$failures" >&2

@@ -30,9 +30,28 @@ function sanitize(value) {
   return value
 }
 
+// Stream ceiling, applied while a helper is still writing. The collector that
+// used to sit on these pipes buffered a whole stream before anything could
+// look at it, so the cap below could only ever be checked once the memory had
+// already been taken; BoundedReader calls this per chunk instead and kills the
+// producer the moment the total would go over. Returns the new accumulated
+// text, or null to say "over the line, stop reading".
+//
+// Lengths are UTF-16 code units, which are never more than the byte count of
+// the UTF-8 they were decoded from, so a limit here is at least as strict as
+// the same number of bytes.
+function appendBounded(text, chunk, limit) {
+  var next = String(chunk === undefined || chunk === null ? "" : chunk)
+  if (String(text || "").length + next.length > limit) return null
+  return String(text || "") + next
+}
+
 // A helper's stdout is JSON, but a helper that dies mid-write still produces
 // something parseable-looking, so every parse is guarded and every failure
 // degrades to empty rather than throwing inside a signal handler.
+//
+// The size check here is now a backstop behind appendBounded, not the only
+// ceiling: by the time text reaches this function it is already bounded.
 function parseJson(text, fallback) {
   var raw = String(text || "")
   if (raw.length > MAX_PROCESS_OUTPUT) return fallback

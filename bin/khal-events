@@ -35,10 +35,20 @@ fields=(--json start-date --json start-time --json end-date --json end-time
   --json title --json calendar --json uid --json location --json description
   --json repeat-symbol)
 
+# Ceilings on what this can hand back. The panel reads whatever lands here
+# into the shell's memory, and the events come out of .ics files someone else
+# publishes, so neither the number of events nor the length of any one field
+# is left to the publisher. Fields are cut to the same 400 characters the UI
+# would cut them to anyway; the event cap is far above a real month and only
+# bites on a feed that has stopped making sense.
+max_events=2000
+max_field=400
+
 # khal list prints one JSON array per day in the range, so the output is a
 # stream of arrays rather than one document: -s/add flattens it.
 khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null |
-  jq -c -s --slurpfile f <(cat "$filters" 2>/dev/null || echo '{}') '
+  jq -c -s --slurpfile f <(cat "$filters" 2>/dev/null || echo '{}') \
+    --argjson maxEvents "$max_events" --argjson maxField "$max_field" '
     ($f[0] // {}) as $filters
     | (add // [])
     | map(select(
@@ -50,10 +60,10 @@ khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null |
         time: .["start-time"],
         endDate: (.["end-date"] | split("/") | .[2] + "-" + .[1] + "-" + .[0]),
         endTime: .["end-time"],
-        title: .title,
-        calendar: .calendar,
-        uid: .uid,
-        location: .location,
+        title: (.title[0:$maxField]),
+        calendar: (.calendar[0:$maxField]),
+        uid: (.uid[0:$maxField]),
+        location: (.location[0:$maxField]),
         # fixtur.es staples a promo trailer onto the DESCRIPTION of every
         # event it publishes ("Calendar not up to date? …" plus a Buy Me a
         # Coffee link), which for a fixture is the entire description. It is
@@ -65,9 +75,11 @@ khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null |
           | sub("Calendar not up to date\\?[\\s\\S]*$"; "")
           | sub("Support [^\\n]*Buy Me a Coffee[\\s\\S]*$"; "")
           | sub("^\\s+|\\s+$"; "")
+          | .[0:$maxField]
         ),
         repeats: (.["repeat-symbol"] != "")
       })
     | unique
     | sort_by(.date, .time)
+    | .[0:$maxEvents]
   '

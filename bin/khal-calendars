@@ -43,13 +43,17 @@ awk '
   }
   END { if (name != "") print name "\t" color "\t" readonly "\t" path }
 ' "$config" |
-  jq -R -s --arg home "$HOME" '
+  jq -R -s --arg home "$HOME" --argjson maxCalendars 500 --argjson maxField 400 '
     split("\n")
     | map(select(length > 0) | split("\t"))
+    # The config belongs to whoever runs this, but the output is read straight
+    # into the memory of a shell that never restarts, so it is bounded here
+    # the way every other helper bounds its own.
+    | .[0:$maxCalendars]
     | map({
-        name: .[0],
-        color: .[1],
+        name: (.[0][0:$maxField]),
+        color: (.[1][0:$maxField]),
         readonly: (.[2] == "true"),
-        path: (.[3] | sub("^~"; $home))
+        path: (.[3] | sub("^~"; $home) | .[0:$maxField])
       })
   '
