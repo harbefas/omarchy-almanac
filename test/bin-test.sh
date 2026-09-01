@@ -11,6 +11,8 @@ root=$(dirname "$here")
 failures=0
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+export HOME="$work/home"
+mkdir -p "$HOME"
 
 check() {
   local name=$1 expected=$2 actual=$3
@@ -183,11 +185,39 @@ check "the khal calendar is written too" '1' \
 "$root/bin/khal-feeds" add sports_f1 "https://example.com/f1.ics" >/dev/null 2>&1
 check "a duplicate feed is refused" '1' "$?"
 
+"$root/bin/khal-feeds" add ../escape "https://example.com/f1.ics" >/dev/null 2>&1
+check "a feed name cannot escape the calendar directory" '1' "$?"
+
+"$root/bin/khal-feeds" add bad_url "webcal://example.com/f1.ics" >/dev/null 2>&1
+check "a feed URL must be http or https" '1' "$?"
+
+"$root/bin/khal-feeds" add bad_space "https://example.com/f1 calendar.ics" >/dev/null 2>&1
+check "a feed URL cannot contain raw spaces" '1' "$?"
+
+"$root/bin/khal-feeds" add bad_config $'https://example.com/f1.ics"\n[[evil]]' >/dev/null 2>&1
+check "a feed URL cannot inject config lines" '1' "$?"
+
+"$root/bin/khal-feeds" add bad_color "https://example.com/f1.ics" \
+  --color $'red\n[[evil]]' >/dev/null 2>&1
+check "a feed color cannot inject config lines" '1' "$?"
+
 "$root/bin/khal-feeds" remove sports_f1 >/dev/null
 check "removing restores the vdirsyncer config byte for byte" '' \
   "$(diff "$work/vdirsyncer-config.pristine" "$work/vdirsyncer-config")"
 check "removing restores the khal config byte for byte" '' \
   "$(diff "$work/khal-config.pristine" "$work/khal-config")"
+
+VDIRSYNCER_CONFIG="$work/missing-vdirsyncer" \
+  "$root/bin/khal-feeds" add missing_vdir "https://example.com/f1.ics" >/dev/null 2>&1
+check "adding a feed needs an existing vdirsyncer config" '1' "$?"
+check "a missing vdirsyncer config is not created" 'missing' \
+  "$([ -e "$work/missing-vdirsyncer" ] && echo created || echo missing)"
+
+KHAL_CONFIG="$work/missing-khal" \
+  "$root/bin/khal-feeds" add missing_khal "https://example.com/f1.ics" >/dev/null 2>&1
+check "adding a feed needs an existing khal config" '1' "$?"
+check "a missing khal config leaves vdirsyncer untouched" '' \
+  "$(diff "$work/vdirsyncer-config.pristine" "$work/vdirsyncer-config")"
 
 # khal-feeds add always creates the directory under the real XDG data dir,
 # so this one is the test's to clean up. Removing a feed deliberately leaves

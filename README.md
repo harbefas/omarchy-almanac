@@ -111,7 +111,9 @@ On the Calendars page, `Space` hides a calendar from the agenda. It keeps
 syncing; this is a view filter, not a subscription change.
 
 On the Feeds page, `n` adds a feed, `s` syncs the selected one, `Shift+S`
-syncs every feed, and `d` removes one.
+syncs every feed, and `d` removes one. Feed names are limited to one
+section-safe token: letters, numbers, dashes and underscores. Feed URLs must be
+`http://` or `https://`.
 
 ## When something is wrong
 
@@ -154,7 +156,10 @@ filename.
 
 Adding a feed writes both configs, the `vdirsyncer` pair and the `khal`
 calendar, because either one alone leaves `khal` pointing at a directory
-nothing syncs. Both are edited as text so their comments survive.
+nothing syncs. Both are edited as text so their comments survive. Feed names,
+URLs and colors are validated before either config is opened for append. Both
+config files must already exist; Almanac does not create a new `khal` or
+vdirsyncer setup from scratch.
 
 Removing a feed unregisters it from both configs but leaves the events it
 already downloaded on disk. `path` in those configs is yours to set and can

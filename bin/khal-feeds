@@ -26,6 +26,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 VDIRSYNCER = Path(
     os.environ.get("VDIRSYNCER_CONFIG", "~/.config/vdirsyncer/config")
@@ -36,6 +37,38 @@ KHAL = Path(os.environ.get("KHAL_CONFIG", "~/.config/khal/config")).expanduser()
 # reporting the inner name either way.
 SECTION = re.compile(r"^\[+([^\[\]]+)\]+\s*$")
 SETTING = re.compile(r"^([a-z_]+)\s*=\s*(.*)$")
+SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def die(message):
+    sys.exit(message)
+
+
+def validate_name(name):
+    """One section-safe token used for pair, storage, calendar and path names."""
+    if not SAFE_NAME.fullmatch(name):
+        die("feed name must be 1-64 letters, numbers, dashes or underscores")
+    return name
+
+
+def validate_url(url):
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        die("feed URL must start with http:// or https://")
+    if '"' in url or any(char.isspace() for char in url):
+        die("feed URL contains characters that cannot be written to vdirsyncer config")
+    return url
+
+
+def validate_color(color):
+    if any(char in color for char in ("\r", "\n", "[", "]")) or len(color) > 64:
+        die("color contains characters that cannot be written to khal config")
+    return color
+
+
+def require_config(path, label):
+    if not path.is_file():
+        die(f"{label} config not found at {path}")
 
 
 def parse(path):
@@ -137,9 +170,13 @@ def cmd_list(_args):
 
 
 def cmd_add(args):
-    name = args.name
+    name = validate_name(args.name)
+    url = validate_url(args.url)
+    color = validate_color(args.color)
+    require_config(VDIRSYNCER, "vdirsyncer")
+    require_config(KHAL, "khal")
     if any(feed["name"] == f"{name}_pair" for feed in feeds()):
-        sys.exit(f"feed {name!r} already exists")
+        die(f"feed {name!r} already exists")
 
     path = Path(f"~/.local/share/khal/calendars/{name}/").expanduser()
     path.mkdir(parents=True, exist_ok=True)
@@ -160,7 +197,7 @@ fileext = ".ics"
 
 [storage {name}_remote]
 type = "http"
-url = "{args.url}"
+url = "{url}"
 """
         )
 
@@ -172,7 +209,7 @@ url = "{args.url}"
         "",
         f"[[{name}]]",
         f"path = ~/.local/share/khal/calendars/{name}/",
-        f"color = {args.color}",
+        f"color = {color}",
         "readonly = True",
     ]
     for number, line in enumerate(lines):
@@ -189,7 +226,9 @@ url = "{args.url}"
 
 
 def cmd_remove(args):
-    name = args.name
+    name = validate_name(args.name)
+    require_config(VDIRSYNCER, "vdirsyncer")
+    require_config(KHAL, "khal")
     # Where the already-synced copy is left. Removing a feed unregisters it
     # from both configs but does not delete the events: `path` comes from a
     # config the user owns and can point anywhere, so a one-keystroke
@@ -211,7 +250,7 @@ def cmd_remove(args):
 
 
 def cmd_sync(args):
-    pairs = [f"{args.name}_pair"] if args.name else []
+    pairs = [f"{validate_name(args.name)}_pair"] if args.name else []
     subprocess.run(["vdirsyncer", "discover", *pairs], check=False)
     result = subprocess.run(
         ["vdirsyncer", "sync", *pairs], capture_output=True, text=True, check=False
