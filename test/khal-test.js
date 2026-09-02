@@ -6,7 +6,8 @@ const fs = require("fs");
 const K = {};
 new Function("exports", fs.readFileSync(process.argv[2], "utf8") + ";" +
   "Object.assign(exports, { parseJson, appendBounded, clean, sanitize, isoDate," +
-  " isoDateTime, groupByDay, addDays, filterEvents, timeLabel, rangeLabel });")(K);
+  " isoDateTime, groupByDay, addDays, filterEvents, timeLabel, rangeLabel," +
+  " isDayKey });")(K);
 
 let failures = 0;
 
@@ -77,6 +78,45 @@ const twoDay = { date: "2026-09-05", endDate: "2026-09-07", time: "", title: "Pr
 check("all-day DTEND is exclusive",
   Object.keys(K.groupByDay([twoDay], "2026-09-01", "2026-09-10")).sort(),
   ["2026-09-05", "2026-09-06"]);
+
+// ---- grouping is bounded by the grid, not by what the feed claims
+//
+// The dates come out of somebody else's .ics, and the walk below used to run
+// from the event's start to its end one day at a time. An event ending in the
+// year 9999 is several million iterations on the thread that draws the panel,
+// which the event and field caps do nothing about, so the span is clipped to
+// the range being drawn before the walk starts.
+
+const wide = { date: "2026-08-01", endDate: "9999-12-31", time: "", title: "Forever" };
+const started = Date.now();
+const clipped = K.groupByDay([wide], "2026-09-01", "2026-09-30");
+check("an extreme span fills only the grid", Object.keys(clipped).length, 30);
+check("an extreme span is not walked day by day", Date.now() - started < 1000, true);
+check("the first day of the grid is filled", clipped["2026-09-01"].length, 1);
+check("the last day of the grid is filled", clipped["2026-09-30"].length, 1);
+
+check("a malformed start date is skipped",
+  K.groupByDay([{ date: "nope", endDate: "2026-09-02", time: "" }], "2026-09-01", "2026-09-30"),
+  {});
+check("a malformed end date falls back to the start day",
+  Object.keys(K.groupByDay(
+    [{ date: "2026-09-05", endDate: "nope", time: "" }], "2026-09-01", "2026-09-30")),
+  ["2026-09-05"]);
+check("an end before the start does not walk backwards",
+  Object.keys(K.groupByDay(
+    [{ date: "2026-09-05", endDate: "2026-09-01", time: "" }], "2026-09-01", "2026-09-30")),
+  ["2026-09-05"]);
+check("an event wholly outside the grid is dropped",
+  K.groupByDay([{ date: "2020-01-01", endDate: "2020-01-05", time: "" }],
+    "2026-09-01", "2026-09-30"),
+  {});
+check("a malformed grid range groups nothing",
+  K.groupByDay([{ date: "2026-09-05", time: "" }], "nope", "2026-09-30"), {});
+check("a backwards grid range groups nothing",
+  K.groupByDay([{ date: "2026-09-05", time: "" }], "2026-09-30", "2026-09-01"), {});
+check("a day key is what it says it is",
+  [K.isDayKey("2026-09-01"), K.isDayKey("2026-9-1"), K.isDayKey(""), K.isDayKey(null)],
+  [true, false, false, false]);
 
 // ---- search
 

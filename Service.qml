@@ -81,6 +81,15 @@ Item {
     return proc.stdout.overflowed || proc.stderr.overflowed
   }
 
+  // A helper that was still running when its watchdog went off exits on a
+  // signal, which on its own says nothing about why.
+  function noteTimeout(proc, watchdog) {
+    if (!watchdog.fired) return false
+    error = "a helper in bin/ was still running after "
+      + Math.round(watchdog.deadlineMs / 1000) + "s and was stopped"
+    return true
+  }
+
   function noteOverflow(proc) {
     if (!overflowed(proc)) return false
     error = "a helper in bin/ wrote more than " + Math.floor(proc.stdout.limit / 1024)
@@ -123,9 +132,14 @@ Item {
     stdout: BoundedReader { process: eventsProc }
     stderr: BoundedReader { process: eventsProc; limit: 64 * 1024 }
 
-    onStarted: root.resetReaders(eventsProc)
+    onStarted: {
+      root.resetReaders(eventsProc)
+      eventsWatchdog.begin()
+    }
     onExited: function(exitCode) {
+      eventsWatchdog.stop()
       root.loading = false
+      if (root.noteTimeout(eventsProc, eventsWatchdog)) return
       if (root.noteOverflow(eventsProc)) return
       if (!root.noteFailure(exitCode, root.errorTextOf(eventsProc))) {
         root.error = ""
@@ -139,6 +153,8 @@ Item {
       }
     }
   }
+
+  Watchdog { id: eventsWatchdog; process: eventsProc }
 
   // ---- Calendars. khal printcalendars drops the readonly flag, so the
   //      helper reads the config instead; the panel needs it before it can
@@ -157,13 +173,20 @@ Item {
     stdout: BoundedReader { process: calendarsProc; limit: 1024 * 1024 }
     stderr: BoundedReader { process: calendarsProc; limit: 64 * 1024 }
 
-    onStarted: root.resetReaders(calendarsProc)
+    onStarted: {
+      root.resetReaders(calendarsProc)
+      calendarsWatchdog.begin()
+    }
     onExited: function(exitCode) {
+      calendarsWatchdog.stop()
+      if (root.noteTimeout(calendarsProc, calendarsWatchdog)) return
       if (root.noteOverflow(calendarsProc)) return
       if (!root.noteFailure(exitCode, root.errorTextOf(calendarsProc)))
         root.calendars = Khal.parseJson(calendarsProc.stdout.text, [])
     }
   }
+
+  Watchdog { id: calendarsWatchdog; process: calendarsProc }
 
   // ---- Feeds.
   property var feeds: []
@@ -179,13 +202,20 @@ Item {
     stdout: BoundedReader { process: feedsProc; limit: 1024 * 1024 }
     stderr: BoundedReader { process: feedsProc; limit: 64 * 1024 }
 
-    onStarted: root.resetReaders(feedsProc)
+    onStarted: {
+      root.resetReaders(feedsProc)
+      feedsWatchdog.begin()
+    }
     onExited: function(exitCode) {
+      feedsWatchdog.stop()
+      if (root.noteTimeout(feedsProc, feedsWatchdog)) return
       if (root.noteOverflow(feedsProc)) return
       if (!root.noteFailure(exitCode, root.errorTextOf(feedsProc)))
         root.feeds = Khal.parseJson(feedsProc.stdout.text, [])
     }
   }
+
+  Watchdog { id: feedsWatchdog; process: feedsProc }
 
   // ---- Mutations. One at a time: every one of them ends in a refresh, and
   //      two overlapping writes would race to describe the result. The panel
@@ -194,33 +224,50 @@ Item {
   property string status: ""
   signal mutated(bool ok, string message)
 
-  function run(args) {
+  // What the next mutation will send down its stdin, set by run() and
+  // written once the process is up. Empty for the mutations that have no
+  // private half to send.
+  property string payload: ""
+
+  function run(args, payloadObject) {
     if (busy) return false
     busy = true
     status = ""
+    payload = payloadObject === undefined ? "" : JSON.stringify(payloadObject)
+    mutationProc.stdinEnabled = payload !== ""
     mutationProc.command = args
     mutationProc.running = true
     return true
   }
 
+  // Titles, locations, descriptions, uids and calendar names all go over
+  // stdin rather than in the command line. /proc/<pid>/cmdline is readable by
+  // anything running on the machine, so an argument is a published argument,
+  // and what is in somebody's calendar is not the panel's to publish.
   function createEvent(calendar, start, end, title, location, description, repeat) {
-    return run([helper("khal-event-new"), calendar, start, end, title,
-      location || "", description || "", repeat || ""])
+    return run([helper("khal-event-new"), "--stdin"], {
+      calendar: calendar,
+      start: start,
+      end: end,
+      title: title,
+      location: location || "",
+      description: description || "",
+      repeat: repeat || ""
+    })
   }
 
   function updateEvent(uid, fields) {
-    var args = [helper("khal-event-edit"), uid]
+    var payload = { uid: uid }
     var names = ["title", "start", "end", "location", "description", "calendar"]
     for (var i = 0; i < names.length; i++) {
       var value = fields[names[i]]
-      if (value !== undefined && value !== null)
-        args.push("--" + names[i], String(value))
+      if (value !== undefined && value !== null) payload[names[i]] = String(value)
     }
-    return run(args)
+    return run([helper("khal-event-edit"), "--stdin"], payload)
   }
 
   function deleteEvent(uid) {
-    return run([helper("khal-event-edit"), uid, "--delete"])
+    return run([helper("khal-event-edit"), "--stdin"], { uid: uid, delete: true })
   }
 
   function addFeed(name, url, color) {
@@ -244,9 +291,25 @@ Item {
     stdout: BoundedReader { process: mutationProc; limit: 1024 * 1024 }
     stderr: BoundedReader { process: mutationProc; limit: 64 * 1024 }
 
-    onStarted: root.resetReaders(mutationProc)
+    onStarted: {
+      root.resetReaders(mutationProc)
+      mutationWatchdog.begin()
+      // The private half of an event goes down the pipe rather than into
+      // argv, which every process on the machine can read out of /proc.
+      if (root.payload !== "") {
+        mutationProc.write(root.payload)
+        root.payload = ""
+      }
+      // Closing the write channel is the EOF the helper reads until.
+      mutationProc.stdinEnabled = false
+    }
     onExited: function(exitCode) {
+      mutationWatchdog.stop()
       root.busy = false
+      if (root.noteTimeout(mutationProc, mutationWatchdog)) {
+        root.mutated(false, root.error)
+        return
+      }
       if (root.noteOverflow(mutationProc)) {
         root.mutated(false, root.error)
         return

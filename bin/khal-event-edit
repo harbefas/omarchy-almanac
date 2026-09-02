@@ -57,10 +57,13 @@ MAX_HELPER_SECONDS = float(os.environ.get("KHAL_HELPER_TIMEOUT", 30))
 # byte ceiling ever trips.
 # Overridable so the tests can watch each ceiling bite without building a
 # store big enough to reach it honestly.
-MAX_ICS_FILES = int(os.environ.get("KHAL_SEARCH_FILES", 5000))
-MAX_SEARCH_BYTES = int(os.environ.get("KHAL_SEARCH_BYTES", 64 * 1024 * 1024))
+# Sized against a real store rather than a tidy one: a handful of sports feeds
+# is tens of thousands of files, and a ceiling that refuses to find an event
+# somebody can see on their own screen is a bug, not a bound.
+MAX_ICS_FILES = int(os.environ.get("KHAL_SEARCH_FILES", 50000))
+MAX_SEARCH_BYTES = int(os.environ.get("KHAL_SEARCH_BYTES", 256 * 1024 * 1024))
 MAX_COMPONENTS = 500
-MAX_SEARCH_SECONDS = float(os.environ.get("KHAL_SEARCH_TIMEOUT", 20))
+MAX_SEARCH_SECONDS = float(os.environ.get("KHAL_SEARCH_TIMEOUT", 60))
 
 
 def kill_group(process):
@@ -185,8 +188,39 @@ def find_event(uid):
     deadline = time.monotonic() + MAX_SEARCH_SECONDS
     files_seen = 0
     bytes_read = 0
+    known = calendars()
 
-    for cal in calendars():
+    # vdirsyncer and `khal new` both name a file after the UID it holds, so
+    # the file is usually one open away. Nothing in the format requires that,
+    # which is why the walk below still exists, but paying for the walk when
+    # the guess is right means reading tens of thousands of files to find one
+    # that was named after what was being looked for.
+    if uid and "/" not in uid and "\0" not in uid and uid not in (".", ".."):
+        for cal in known:
+            root = os.path.expanduser(cal["path"])
+            if not os.path.isdir(root):
+                continue
+            dir_fd = almanac_fs.open_directory(root, f"calendar {cal['name']!r}")
+            keep_open = False
+            try:
+                raw, info = read_ics(dir_fd, f"{uid}.ics")
+                if raw is None:
+                    continue
+                try:
+                    cal_obj = icalendar.Calendar.from_ical(raw)
+                except ValueError:
+                    continue
+                for component in cal_obj.walk("VEVENT"):
+                    if str(component.get("UID", "")) == uid:
+                        keep_open = True
+                        return Found(
+                            cal, dir_fd, f"{uid}.ics", info, cal_obj, component
+                        )
+            finally:
+                if not keep_open:
+                    os.close(dir_fd)
+
+    for cal in known:
         root = os.path.expanduser(cal["path"])
         if not os.path.isdir(root):
             continue
@@ -241,7 +275,46 @@ def parse_when(value):
     return date.fromisoformat(value)
 
 
+# The payload arrives over a pipe when the panel calls this, and a pipe read
+# without a ceiling is the same unbounded read as everywhere else.
+MAX_PAYLOAD_BYTES = 256 * 1024
+
+PAYLOAD_FIELDS = (
+    "uid", "title", "start", "end", "location", "description", "calendar"
+)
+
+
+def read_payload():
+    """One JSON object of the fields, read from stdin under a ceiling.
+
+    A title, a location and a description are the private part of a calendar,
+    and argv is readable by every process on the machine through /proc, so the
+    panel sends them here instead of passing them as arguments.
+    """
+    raw = sys.stdin.buffer.read(MAX_PAYLOAD_BYTES + 1)
+    if len(raw) > MAX_PAYLOAD_BYTES:
+        sys.exit(f"the edit payload is larger than {MAX_PAYLOAD_BYTES} bytes")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        sys.exit("the edit payload was not readable as JSON")
+    if not isinstance(payload, dict):
+        sys.exit("the edit payload is not an object")
+
+    parsed = argparse.Namespace(delete=bool(payload.get("delete")))
+    for field in PAYLOAD_FIELDS:
+        value = payload.get(field)
+        setattr(parsed, field, None if value is None else str(value))
+    if not parsed.uid:
+        sys.exit("the edit payload names no event")
+    return parsed
+
+
 def main():
+    if "--stdin" in sys.argv[1:]:
+        args = read_payload()
+        return run(args)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("uid")
     parser.add_argument("--delete", action="store_true")
@@ -252,7 +325,10 @@ def main():
     parser.add_argument("--description")
     parser.add_argument("--calendar", help="move the event to this calendar")
     args = parser.parse_args()
+    return run(args)
 
+
+def run(args):
     found = find_event(args.uid)
     cal, event, cal_obj = found.calendar, found.component, found.cal_obj
 

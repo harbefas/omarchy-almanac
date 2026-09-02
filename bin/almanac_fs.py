@@ -188,6 +188,24 @@ def write_leaf(dir_fd, name, data, prefix="almanac"):
     os.fsync(dir_fd)
 
 
+def stamp(info):
+    """What identifies a file's contents for a compare-and-swap.
+
+    Identity plus size plus modification time: the same file changed in place
+    keeps its inode, so identity alone would not notice an edit.
+    """
+    return (info.st_ino, info.st_dev, info.st_size, info.st_mtime_ns)
+
+
+def unchanged(dir_fd, name, before):
+    """Whether `name` still carries the stamp it was read with."""
+    try:
+        current = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return stamp(current) == before
+
+
 def same_file(dir_fd, name, info):
     """Whether `name` is still the file `info` was taken from."""
     try:

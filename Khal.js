@@ -85,20 +85,48 @@ function isoDateTime(date, time) {
 // A *timed* event is never spread, even when it crosses midnight. A ballgame
 // starting 23:10 and ending 02:10 belongs to the night it starts; listing it
 // on the next day too put "23:10" on a day it never began.
+// A day key is "yyyy-mm-dd" and nothing else. The dates come out of an .ics
+// somebody else publishes, and every comparison below is a string comparison,
+// so a key that is not this shape does not order the way the loop assumes.
+var DAY_KEY = /^\d{4}-\d{2}-\d{2}$/
+
+function isDayKey(value) {
+  return typeof value === "string" && DAY_KEY.test(value)
+}
+
+function maxKey(a, b) { return a > b ? a : b }
+function minKey(a, b) { return a < b ? a : b }
+
 function groupByDay(events, firstKey, lastKey) {
   var map = {}
+  if (!isDayKey(firstKey) || !isDayKey(lastKey) || firstKey > lastKey) return map
+
   for (var i = 0; i < events.length; i++) {
     var event = events[i]
+    if (!isDayKey(event.date)) continue
+
     var day = event.date
     var last = event.time ? day : (event.endDate || event.date)
+    if (!isDayKey(last)) last = day
     // An all-day event's DTEND is exclusive, so the final day is not its own.
     if (!event.time && last > day) last = addDays(last, -1)
-    while (day <= last) {
-      if (day >= firstKey && day <= lastKey) {
-        if (!map[day]) map[day] = []
-        map[day].push(event)
-      }
-      if (day === last) break
+    if (last < day) last = day
+
+    // Clipped to the range being drawn *before* the walk rather than tested
+    // inside it. A feed is free to publish an event ending in the year 9999,
+    // and walking from its start to there is several million iterations for
+    // one event, on the thread that draws the panel, to fill in thirty days.
+    // The number of days that can be written is the size of the grid, whatever
+    // the feed says.
+    var from = maxKey(day, firstKey)
+    var to = minKey(last, lastKey)
+    if (from > to) continue
+
+    day = from
+    while (day <= to) {
+      if (!map[day]) map[day] = []
+      map[day].push(event)
+      if (day === to) break
       day = addDays(day, 1)
     }
   }

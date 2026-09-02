@@ -86,15 +86,33 @@ MAX_SETTINGS_PER_SECTION = 100
 
 
 def read_config(path, label):
-    """The config's text, read through a walked and verified descriptor.
+    """The config's text, read through a walked and verified descriptor."""
+    return read_config_stamped(path, label)[0]
+
+
+def read_config_stamped(path, label):
+    """The config's text and the stamp it was read under.
 
     Every component of the path is opened with O_NOFOLLOW relative to the one
     before it, so neither the directories on the way nor the file at the end
     can be swapped for something else between being checked and being read.
+    The stamp is what a later write compares against: these configs are
+    hand-maintained, and somebody editing one in a text editor while a feed is
+    being added would otherwise have their edit quietly overwritten by a
+    document composed from what the file said beforehand.
     """
-    return almanac_fs.read_file(path, f"{label} config", MAX_CONFIG_BYTES).decode(
-        "utf-8", "replace"
-    )
+    dir_fd, name = almanac_fs.open_dir(path, f"{label} config")
+    try:
+        fd, info = almanac_fs.open_leaf(
+            dir_fd, name, path, f"{label} config", MAX_CONFIG_BYTES
+        )
+        try:
+            text = almanac_fs.read_fd(fd, MAX_CONFIG_BYTES)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
+    return text.decode("utf-8", "replace"), almanac_fs.stamp(info)
 
 
 def require_config(path, label):
@@ -111,11 +129,21 @@ def require_config(path, label):
 
 def parse(path, label="config"):
     """[(section-name, {key: value}, [line numbers]) …] in file order."""
-    sections = []
     try:
-        text = read_config(path, label)
+        return parse_text(read_config(path, label))
     except FileNotFoundError:
-        return sections
+        return []
+
+
+def parse_text(text):
+    """The same, over text already in hand.
+
+    Taken separately so a caller that is about to rewrite a config parses the
+    exact bytes it is going to edit. Parsing the path a second time would read
+    the file again, and the line numbers would then describe a document that
+    is not the one being changed.
+    """
+    sections = []
     for number, line in enumerate(text.splitlines()):
         match = SECTION.match(line.strip())
         if match:
@@ -193,8 +221,13 @@ def feeds():
     return out
 
 
-def write_config(path, text, label):
+def write_config(path, text, label, expected=None):
     """Replace the config atomically, through the directory it lives in.
+
+    With `expected`, the write is a compare-and-swap: the file has to still
+    carry the stamp it was read under, or the composition this text was built
+    from describes a config that no longer exists and writing it would throw
+    away whoever changed it in the meantime.
 
     The directory is walked and held as a descriptor, and the temp file is
     created in it under a name nothing could have guessed, so O_EXCL is a real
@@ -204,23 +237,43 @@ def write_config(path, text, label):
     """
     dir_fd, name = almanac_fs.open_dir(path, f"{label} config")
     try:
+        if expected is not None and not almanac_fs.unchanged(dir_fd, name, expected):
+            die(
+                f"{label} config at {path} changed while this feed was being "
+                "written; nothing was saved"
+            )
         almanac_fs.write_leaf(dir_fd, name, text.encode("utf-8"), prefix=label)
     finally:
         os.close(dir_fd)
 
 
-def write_both(vdirsyncer_text, khal_text):
+def write_both(vdirsyncer_text, khal_text, stamps):
     """Write both configs, putting the first one back if the second fails.
 
     A feed lives in two files at once, and a feed registered in one of them is
     a calendar khal cannot resolve. There is no way to rename two files as one
-    operation, so the narrow window between the two renames is closed by
-    restoring what was there before.
+    operation, so the window between the two renames is closed by restoring
+    what was there before.
+
+    Both writes are compare-and-swap against the stamps the texts were
+    composed from, so a config edited in the meantime is refused rather than
+    overwritten. The khal check happens before the vdirsyncer write, because
+    discovering the second file has moved on after replacing the first would
+    mean rolling back a write that already landed.
     """
-    original = read_config(VDIRSYNCER, "vdirsyncer")
-    write_config(VDIRSYNCER, vdirsyncer_text, "vdirsyncer")
+    vdirsyncer_stamp, khal_stamp = stamps
+    original, _ = read_config_stamped(VDIRSYNCER, "vdirsyncer")
+
+    khal_dir_fd, khal_name = almanac_fs.open_dir(KHAL, "khal config")
     try:
-        write_config(KHAL, khal_text, "khal")
+        if not almanac_fs.unchanged(khal_dir_fd, khal_name, khal_stamp):
+            die("khal config changed while this feed was being written; nothing was saved")
+    finally:
+        os.close(khal_dir_fd)
+
+    write_config(VDIRSYNCER, vdirsyncer_text, "vdirsyncer", expected=vdirsyncer_stamp)
+    try:
+        write_config(KHAL, khal_text, "khal", expected=khal_stamp)
     except BaseException:
         write_config(VDIRSYNCER, original, "vdirsyncer")
         raise
@@ -258,7 +311,11 @@ def cmd_add(args):
     path = Path(f"~/.local/share/khal/calendars/{name}/").expanduser()
     path.mkdir(parents=True, exist_ok=True)
 
-    vdirsyncer_text = read_config(VDIRSYNCER, "vdirsyncer") + (
+    # Read once, with the stamp the write will be checked against: composing
+    # a new config from what a file said and then writing it back is a lost
+    # update if somebody edited that file in between.
+    vdirsyncer_before, vdirsyncer_stamp = read_config_stamped(VDIRSYNCER, "vdirsyncer")
+    vdirsyncer_text = vdirsyncer_before + (
         f"""
 [pair {name}_pair]
 a = "{name}_local"
@@ -280,7 +337,8 @@ url = "{url}"
     # The calendar entry goes before khal's first top-level section, since
     # everything after [sqlite] would be read as a setting of it rather than a
     # new calendar.
-    lines = read_config(KHAL, "khal").splitlines()
+    khal_before, khal_stamp = read_config_stamped(KHAL, "khal")
+    lines = khal_before.splitlines()
     entry = [
         "",
         f"[[{name}]]",
@@ -296,7 +354,11 @@ url = "{url}"
             break
     else:
         lines.extend(entry)
-    write_both(vdirsyncer_text, "\n".join(lines).rstrip("\n") + "\n")
+    write_both(
+        vdirsyncer_text,
+        "\n".join(lines).rstrip("\n") + "\n",
+        (vdirsyncer_stamp, khal_stamp),
+    )
 
     print(json.dumps({"ok": True, "added": name, "calendar": name}))
 
@@ -316,18 +378,18 @@ def cmd_remove(args):
             orphaned = feed["path"]
             break
 
+    vdirsyncer_before, vdirsyncer_stamp = read_config_stamped(VDIRSYNCER, "vdirsyncer")
+    khal_before, khal_stamp = read_config_stamped(KHAL, "khal")
+
     write_both(
         drop_sections(
-            read_config(VDIRSYNCER, "vdirsyncer"),
+            vdirsyncer_before,
             lambda section: section
             in (f"pair {name}_pair", f"storage {name}_local", f"storage {name}_remote"),
-            parse(VDIRSYNCER, "vdirsyncer"),
+            parse_text(vdirsyncer_before),
         ),
-        drop_sections(
-            read_config(KHAL, "khal"),
-            lambda section: section == name,
-            parse(KHAL, "khal"),
-        ),
+        drop_sections(khal_before, lambda section: section == name, parse_text(khal_before)),
+        (vdirsyncer_stamp, khal_stamp),
     )
     print(json.dumps({"ok": True, "removed": name, "orphaned": orphaned}))
 

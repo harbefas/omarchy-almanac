@@ -1,23 +1,79 @@
 #!/usr/bin/env bash
 # Creates an event through `khal new` and echoes it back as JSON.
 #
-# Usage: khal-event-new <calendar> <start-iso> <end-iso> <title>
+# Usage: khal-event-new --stdin
+#        khal-event-new <calendar> <start-iso> <end-iso> <title>
 #                       [location] [description] [repeat]
+#
+# --stdin reads one JSON object with those names as keys instead, which is how
+# the panel calls it: a title, a location and a description are the private
+# part of a calendar, and argv is readable by every process on the machine
+# through /proc. The positional form is kept for use from a terminal, where
+# the arguments were typed by the person reading them anyway.
 #
 # start/end are "yyyy-mm-dd" or "yyyy-mm-ddTHH:MM". An all-day event is a
 # start with no time; khal wants both ends in the same shape.
 
 set -euo pipefail
 
-calendar=$1
-start=$2
-end=$3
-title=$4
-location=${5-}
-description=${6-}
-repeat=${7-}
+require() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "$1 is not installed or not on PATH" >&2
+    exit 127
+  }
+}
 
-readonly_cal=$("$(dirname "$0")/khal-calendars" |
+require khal
+require jq
+require timeout
+
+# Deadlines rather than patience: khal reads a store that can sit on a mount
+# that has stopped answering, and this helper is called by a service that
+# stays busy until it returns. timeout runs the command in a process group of
+# its own and signals the group, so a wedged khal does not leave its children
+# behind, and --kill-after escalates when TERM is not enough.
+max_seconds="${KHAL_TIMEOUT:-30}"
+run_bounded() {
+  timeout --kill-after=5s "$max_seconds" "$@"
+}
+
+here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
+
+# The payload is read as one JSON document rather than as a stream of
+# arguments, and bounded: it comes over a pipe, and a pipe with nobody
+# minding the size is the same unbounded read this plugin has everywhere else.
+max_payload_bytes=$((256 * 1024))
+
+if [ "${1-}" = "--stdin" ]; then
+  payload=$(head -c "$max_payload_bytes")
+  jq -e . >/dev/null 2>&1 <<<"$payload" || {
+    echo "the event payload was not readable as JSON" >&2
+    exit 65
+  }
+  field() { jq -r --arg k "$1" '.[$k] // ""' <<<"$payload"; }
+  calendar=$(field calendar)
+  start=$(field start)
+  end=$(field end)
+  title=$(field title)
+  location=$(field location)
+  description=$(field description)
+  repeat=$(field repeat)
+else
+  calendar=$1
+  start=$2
+  end=$3
+  title=$4
+  location=${5-}
+  description=${6-}
+  repeat=${7-}
+fi
+
+[ -n "$calendar" ] && [ -n "$start" ] && [ -n "$end" ] && [ -n "$title" ] || {
+  echo "an event needs a calendar, a start, an end and a title" >&2
+  exit 65
+}
+
+readonly_cal=$(run_bounded "$here/khal-calendars" |
   jq -r --arg c "$calendar" '.[] | select(.name == $c) | .readonly')
 
 [ "$readonly_cal" = "false" ] || {
@@ -42,5 +98,9 @@ args=(new -a "$calendar")
 args+=("$(to_khal "$start")" "$(to_khal "$end")" "$title")
 [ -n "$description" ] && args+=(":: $description")
 
-khal "${args[@]}" >/dev/null
+run_bounded khal "${args[@]}" >/dev/null || {
+  status=$?
+  [ "$status" = 124 ] && echo "khal did not finish within ${max_seconds}s" >&2
+  exit "$status"
+}
 jq -n --arg c "$calendar" --arg t "$title" '{ok: true, calendar: $c, title: $t}'

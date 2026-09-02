@@ -105,6 +105,24 @@ with tempfile.TemporaryDirectory() as work:
 
         # ---- writes
 
+        # ---- stamps, which are what a compare-and-swap compares
+        #
+        # These configs are hand-maintained. Somebody editing one in a text
+        # editor while a feed is being added would otherwise have their edit
+        # overwritten by a document composed from what the file said before.
+        # An in-place edit keeps the inode, so identity alone does not notice.
+        info = os.stat("config", dir_fd=dir_fd, follow_symlinks=False)
+        before = almanac_fs.stamp(info)
+        check("an untouched file still carries its stamp",
+              almanac_fs.unchanged(dir_fd, "config", before), True)
+
+        with open("config", "w", opener=lambda p, f: os.open(p, f, dir_fd=dir_fd)) as h:
+            h.write("edited in place")
+        check("an in-place edit is noticed even though the inode is the same",
+              almanac_fs.same_file(dir_fd, "config", info), True)
+        check("an in-place edit breaks the stamp",
+              almanac_fs.unchanged(dir_fd, "config", before), False)
+
         info = os.stat("config", dir_fd=dir_fd, follow_symlinks=False)
         almanac_fs.write_leaf(dir_fd, "config", b"ours")
         check("a write lands", (root / "real" / "config").read_text(), "ours")

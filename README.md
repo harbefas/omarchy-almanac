@@ -152,6 +152,20 @@ touches two configs, and each is replaced atomically through a temp file
 beside it; if the second write fails the first is put back, so a feed is
 either registered in both or in neither.
 
+## What the panel sends, and how
+
+Creating, editing and deleting an event sends the payload down the helper's
+stdin rather than passing it as arguments. `/proc/<pid>/cmdline` is readable by
+anything running on the machine, so a title, a location or a description in
+argv is a published one. The helpers still take positional arguments from a
+terminal, where whoever typed them is whoever reads them.
+
+Finding an event tries the file named after its UID first, which is how
+vdirsyncer and `khal new` both name them, and falls back to reading UIDs out of
+every `.ics` in the calendar. A store fed by a few sports calendars is tens of
+thousands of files, and walking all of them to find one that was sitting under
+its own name took twenty seconds.
+
 ## Where the configs have to live
 
 Every file this reads is opened one path component at a time, each relative to

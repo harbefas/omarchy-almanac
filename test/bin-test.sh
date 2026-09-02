@@ -293,6 +293,75 @@ export KHAL_CONFIG="$work/edit-config"
 
 unset KHAL_CONFIG
 
+# ---- the mutation helpers take their payload on stdin
+#
+# A title, a location and a description are the private part of a calendar,
+# and /proc/<pid>/cmdline is readable by anything running on the machine, so
+# the panel sends them down a pipe. The positional form stays for terminal
+# use, where the person typing the arguments is the person reading them.
+
+mkdir -p "$work/cal/stdin"
+cat >"$work/stdin-config" <<CONFIG
+[calendars]
+
+[[stdin]]
+path = $work/cal/stdin/
+color = light green
+
+[sqlite]
+path = $work/khal.db
+CONFIG
+
+cat >"$work/cal/stdin/probe.ics" <<'ICS'
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:stdin-1
+SUMMARY:Before
+DTSTART;VALUE=DATE:20260920
+DTEND;VALUE=DATE:20260921
+END:VEVENT
+END:VCALENDAR
+ICS
+
+export KHAL_CONFIG="$work/stdin-config"
+
+jq -nc '{uid: "stdin-1", title: "From stdin"}' |
+  "$root/bin/khal-event-edit" --stdin >/dev/null
+check "an edit reads its payload from stdin" '1' \
+  "$(grep -c '^SUMMARY:From stdin' "$work/cal/stdin/probe.ics")"
+
+echo 'not json' | "$root/bin/khal-event-edit" --stdin >/dev/null 2>&1
+check "an unreadable payload is refused" '1' "$?"
+
+jq -nc '{title: "no uid here"}' | "$root/bin/khal-event-edit" --stdin >/dev/null 2>&1
+check "a payload naming no event is refused" '1' "$?"
+
+# 512 KB of payload against a 256 KB ceiling. Assembled on the pipe rather
+# than through an argument, because a payload that size does not fit in argv,
+# which is rather the point of sending it this way.
+{
+  printf '{"uid":"stdin-1","description":"'
+  head -c 524288 /dev/zero | tr '\0' 'x'
+  printf '"}'
+} | "$root/bin/khal-event-edit" --stdin >/dev/null 2>&1
+check "an oversize payload is refused" '1' "$?"
+
+# The file is named after the uid, which is how vdirsyncer and khal name them,
+# so the search should not have had to walk anything to find it.
+mv "$work/cal/stdin/probe.ics" "$work/cal/stdin/stdin-1.ics"
+jq -nc '{uid: "stdin-1", title: "Found by name"}' |
+  KHAL_SEARCH_FILES=0 "$root/bin/khal-event-edit" --stdin >/dev/null
+check "a file named after the uid is found without a walk" '1' \
+  "$(grep -c '^SUMMARY:Found by name' "$work/cal/stdin/stdin-1.ics")"
+
+jq -nc '{uid: "stdin-1", delete: true}' |
+  "$root/bin/khal-event-edit" --stdin >/dev/null
+check "a delete reads its payload from stdin" '0' \
+  "$(find "$work/cal/stdin" -name '*.ics' | wc -l)"
+
+unset KHAL_CONFIG
+
 # ---- khal-feeds
 
 # The fixture points at $HOME by default, which made the timestamp checks
