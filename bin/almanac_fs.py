@@ -177,6 +177,13 @@ def write_leaf(dir_fd, name, data, prefix="almanac", expected=None):
     nothing conditional on content. Serializing the whole transaction with
     lock() is what covers it against this plugin's own concurrent runs;
     against an editor that takes no lock, nothing at this layer can.
+
+    Returns the stamp of the file this call installed, taken from the
+    descriptor it wrote rather than by stating the name afterwards. A caller
+    that needs to know later whether its own version is still in place has to
+    be given that identity here: by the time it could stat the path, somebody
+    else's write may already be the thing being stated, and it would record
+    that as its own.
     """
     tmp = temp_name(prefix)
     fd = os.open(
@@ -190,6 +197,11 @@ def write_leaf(dir_fd, name, data, prefix="almanac", expected=None):
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+            # Taken while the file is still held open, before it is given a
+            # name anybody else can reach. The rename below changes ctime but
+            # not the identity, size or mtime this records, so it describes
+            # the installed file exactly.
+            installed = stamp(os.fstat(handle.fileno()))
         # Re-checked here, with the new contents already on disk, so that all
         # that remains between the check and the rename is the rename.
         if expected is not None and not unchanged(dir_fd, name, expected):
@@ -203,6 +215,7 @@ def write_leaf(dir_fd, name, data, prefix="almanac", expected=None):
             pass
         raise
     os.fsync(dir_fd)
+    return installed
 
 
 def stamp(info):

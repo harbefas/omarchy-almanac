@@ -183,6 +183,54 @@ with tempfile.TemporaryDirectory() as work:
     finally:
         os.close(dir_fd)
 
+    # ---- the stamp a write hands back
+    #
+    # A caller that wants to know later whether its own version is still in
+    # place cannot stat the path to find out: by the time it looks, somebody
+    # else's write may already be what it is looking at, and it would record
+    # that as its own and later roll back over it.
+
+    (root / "cas" / "installed").write_text("first")
+    dir_fd = almanac_fs.open_directory(root / "cas")
+    try:
+        mine = almanac_fs.write_leaf(dir_fd, "installed", b"mine")
+        check(
+            "the write hands back the stamp of what it installed",
+            almanac_fs.unchanged(dir_fd, "installed", mine),
+            True,
+        )
+        check(
+            "and that stamp describes the file that is actually there",
+            mine,
+            almanac_fs.stamp(
+                os.stat("installed", dir_fd=dir_fd, follow_symlinks=False)
+            ),
+        )
+
+        # What the rollback precondition has to survive: somebody replaces the
+        # file the instant after the write returns. Stating the path here
+        # would have called that edit ours.
+        (root / "cas" / "theirs").write_text("theirs")
+        os.replace("theirs", "installed", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        check(
+            "a stranger's write does not carry our stamp",
+            almanac_fs.unchanged(dir_fd, "installed", mine),
+            False,
+        )
+        refuses(
+            "so a rollback conditional on that stamp is refused",
+            lambda: almanac_fs.write_leaf(
+                dir_fd, "installed", b"rolled back", expected=mine
+            ),
+        )
+        check(
+            "and the stranger's file survives",
+            (root / "cas" / "installed").read_text(),
+            "theirs",
+        )
+    finally:
+        os.close(dir_fd)
+
     # ---- the transaction lock
     #
     # Two files cannot be renamed as one operation, so what makes the pair of

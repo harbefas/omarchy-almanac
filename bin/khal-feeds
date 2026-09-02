@@ -244,18 +244,9 @@ def write_config(path, text, label, expected=None):
             )
         # Checked again inside write_leaf, once the replacement is on disk, so
         # only the rename itself sits between the last look and the swap.
-        almanac_fs.write_leaf(
+        return almanac_fs.write_leaf(
             dir_fd, name, text.encode("utf-8"), prefix=label, expected=expected
         )
-    finally:
-        os.close(dir_fd)
-
-
-def stamp_of(path, label):
-    """The stamp a file carries right now."""
-    dir_fd, name = almanac_fs.open_dir(path, f"{label} config")
-    try:
-        return almanac_fs.stamp(os.stat(name, dir_fd=dir_fd, follow_symlinks=False))
     finally:
         os.close(dir_fd)
 
@@ -288,8 +279,13 @@ def write_both(vdirsyncer_text, khal_text, stamps):
     finally:
         os.close(khal_dir_fd)
 
-    write_config(VDIRSYNCER, vdirsyncer_text, "vdirsyncer", expected=vdirsyncer_stamp)
-    written = stamp_of(VDIRSYNCER, "vdirsyncer")
+    # The identity of the file this write installed, handed back by the write
+    # itself. Stating the path afterwards would describe whatever is there by
+    # then, which on a bad day is somebody else's edit being recorded as ours
+    # and rolled back over later.
+    written = write_config(
+        VDIRSYNCER, vdirsyncer_text, "vdirsyncer", expected=vdirsyncer_stamp
+    )
 
     try:
         write_config(KHAL, khal_text, "khal", expected=khal_stamp)
