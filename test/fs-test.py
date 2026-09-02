@@ -144,6 +144,109 @@ with tempfile.TemporaryDirectory() as work:
     finally:
         os.close(dir_fd)
 
+    # ---- the pre-rename recheck
+    #
+    # A stamp checked before composing the replacement and never again leaves
+    # the whole write as a window. write_leaf looks once more with the new
+    # contents already on disk, so only the rename is left uncovered.
+
+    (root / "cas").mkdir()
+    (root / "cas" / "config").write_text("original")
+    dir_fd = almanac_fs.open_directory(root / "cas")
+    try:
+        before = almanac_fs.stamp(
+            os.stat("config", dir_fd=dir_fd, follow_symlinks=False)
+        )
+        os.utime("config", ns=(0, 0), dir_fd=dir_fd)
+        refuses(
+            "a write is refused when the target moved on",
+            lambda: almanac_fs.write_leaf(dir_fd, "config", b"mine", expected=before),
+        )
+        check(
+            "the refused write left the newer file alone",
+            (root / "cas" / "config").read_text(),
+            "original",
+        )
+        check(
+            "the refused write left no temp behind",
+            [p.name for p in (root / "cas").iterdir() if ".tmp" in p.name],
+            [],
+        )
+
+        now = almanac_fs.stamp(os.stat("config", dir_fd=dir_fd, follow_symlinks=False))
+        almanac_fs.write_leaf(dir_fd, "config", b"mine", expected=now)
+        check(
+            "a write with a current stamp goes through",
+            (root / "cas" / "config").read_text(),
+            "mine",
+        )
+    finally:
+        os.close(dir_fd)
+
+    # ---- the transaction lock
+    #
+    # Two files cannot be renamed as one operation, so what makes the pair of
+    # writes behave as one change is that no second run of this plugin is
+    # inside the transaction at the same time.
+
+    (root / "cas" / "target").write_text("x")
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time;"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parent.parent / 'bin')!r});"
+            "import almanac_fs;"
+            f"lock = almanac_fs.lock({str(root / 'cas' / 'target')!r});"
+            "lock.__enter__(); print('held', flush=True); time.sleep(30)",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        check("the other run took the lock", holder.stdout.readline().strip(), "held")
+        contended = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys;"
+                f"sys.path.insert(0, {str(Path(__file__).resolve().parent.parent / 'bin')!r});"
+                "import almanac_fs;"
+                f"lock = almanac_fs.lock({str(root / 'cas' / 'target')!r});"
+                "lock.__enter__(); print('got it')",
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "ALMANAC_LOCK_TIMEOUT": "0.2"},
+        )
+        check("a second run is kept out", contended.returncode, 1)
+        check(
+            "and says so rather than waiting forever",
+            "has been running for more than" in contended.stderr,
+            True,
+        )
+    finally:
+        holder.kill()
+        holder.wait()
+
+    # The lock is released with the transaction, not held to process exit.
+    with almanac_fs.lock(root / "cas" / "target"):
+        pass
+    taken_again = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys;"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parent.parent / 'bin')!r});"
+            "import almanac_fs;"
+            f"lock = almanac_fs.lock({str(root / 'cas' / 'target')!r});"
+            "lock.__enter__(); print('got it')",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    check("the lock is free once the transaction ends", taken_again.stdout.strip(), "got it")
+
     # Two temp names in a row differ: O_EXCL only excludes anything if the
     # name could not have been guessed and created first.
     check(

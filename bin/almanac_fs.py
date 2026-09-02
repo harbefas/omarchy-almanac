@@ -19,11 +19,14 @@ dotfiles. Those setups have to place the real directory at the path the
 plugin reads.
 """
 
+import contextlib
 import errno
+import fcntl
 import os
 import secrets
 import stat
 import sys
+import time
 
 # A path deeper than this is not a config location, it is something trying to
 # make the walk expensive.
@@ -158,13 +161,22 @@ def temp_name(prefix):
     return f".{prefix}.{secrets.token_hex(8)}.tmp"
 
 
-def write_leaf(dir_fd, name, data, prefix="almanac"):
+def write_leaf(dir_fd, name, data, prefix="almanac", expected=None):
     """Replace `name` in `dir_fd` with `data`, atomically and durably.
 
     Written to a randomized temp created with O_EXCL in the same directory,
     fsynced, then renamed over the target with both ends of the rename
     relative to the held descriptor. The directory is fsynced after, because
     the rename is only durable once the directory recording it is.
+
+    With `expected`, the target is checked against that stamp immediately
+    before the rename rather than only before the write, so the window where
+    somebody else's edit could be overwritten is the rename call itself. That
+    last gap cannot be closed: POSIX has no rename that fails if the
+    destination changed, and renameat2 offers NOREPLACE and EXCHANGE but
+    nothing conditional on content. Serializing the whole transaction with
+    lock() is what covers it against this plugin's own concurrent runs;
+    against an editor that takes no lock, nothing at this layer can.
     """
     tmp = temp_name(prefix)
     fd = os.open(
@@ -178,6 +190,11 @@ def write_leaf(dir_fd, name, data, prefix="almanac"):
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        # Re-checked here, with the new contents already on disk, so that all
+        # that remains between the check and the rename is the rename.
+        if expected is not None and not unchanged(dir_fd, name, expected):
+            os.unlink(tmp, dir_fd=dir_fd)
+            die(f"{name} changed while it was being rewritten; nothing was saved")
         os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     except BaseException:
         try:
@@ -221,3 +238,56 @@ def unlink_leaf(dir_fd, name, info):
         die(f"{name} changed underneath this edit and was left alone")
     os.unlink(name, dir_fd=dir_fd)
     os.fsync(dir_fd)
+
+
+# How long to wait for another run of this plugin to finish a transaction
+# before giving up. A deadline rather than patience, like everywhere else: a
+# helper that blocks forever on a lock is a service that stays busy forever.
+LOCK_SECONDS = float(os.environ.get("ALMANAC_LOCK_TIMEOUT", 10))
+
+
+@contextlib.contextmanager
+def lock(path, label="config"):
+    """Hold an exclusive lock for a whole read-compose-write transaction.
+
+    A compare-and-swap on each file separately still lets two runs interleave
+    across the pair of them, and the check before a rename cannot be fused
+    with the rename itself. Serializing the transaction is what makes the pair
+    of writes behave as one, so both configs move together or neither does.
+
+    The lock is a file beside the target rather than the target itself: taking
+    it must not depend on being able to open something that a failed run may
+    have left in any state, and locking a file that is replaced by rename
+    would lock an inode nobody can reach afterwards.
+
+    Advisory, so it excludes other runs of this plugin and nothing else. An
+    editor writing the config takes no lock, which is what the stamp checks
+    are for.
+    """
+    dir_fd, name = open_dir(path, label)
+    fd = os.open(
+        f".{name}.almanac.lock",
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC,
+        0o600,
+        dir_fd=dir_fd,
+    )
+    try:
+        deadline = time.monotonic() + LOCK_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    die(
+                        f"another change to {name} has been running for more "
+                        f"than {LOCK_SECONDS:g}s; nothing was saved"
+                    )
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+        os.close(dir_fd)

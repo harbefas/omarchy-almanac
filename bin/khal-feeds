@@ -242,28 +242,45 @@ def write_config(path, text, label, expected=None):
                 f"{label} config at {path} changed while this feed was being "
                 "written; nothing was saved"
             )
-        almanac_fs.write_leaf(dir_fd, name, text.encode("utf-8"), prefix=label)
+        # Checked again inside write_leaf, once the replacement is on disk, so
+        # only the rename itself sits between the last look and the swap.
+        almanac_fs.write_leaf(
+            dir_fd, name, text.encode("utf-8"), prefix=label, expected=expected
+        )
+    finally:
+        os.close(dir_fd)
+
+
+def stamp_of(path, label):
+    """The stamp a file carries right now."""
+    dir_fd, name = almanac_fs.open_dir(path, f"{label} config")
+    try:
+        return almanac_fs.stamp(os.stat(name, dir_fd=dir_fd, follow_symlinks=False))
     finally:
         os.close(dir_fd)
 
 
 def write_both(vdirsyncer_text, khal_text, stamps):
-    """Write both configs, putting the first one back if the second fails.
+    """Write both configs as one change, or leave both alone.
 
     A feed lives in two files at once, and a feed registered in one of them is
     a calendar khal cannot resolve. There is no way to rename two files as one
-    operation, so the window between the two renames is closed by restoring
-    what was there before.
+    operation, so this leans on three things instead: the caller holds a lock
+    across the whole transaction, each write is compare-and-swap against the
+    stamp its text was composed from, and the rollback is itself conditional.
 
-    Both writes are compare-and-swap against the stamps the texts were
-    composed from, so a config edited in the meantime is refused rather than
-    overwritten. The khal check happens before the vdirsyncer write, because
-    discovering the second file has moved on after replacing the first would
-    mean rolling back a write that already landed.
+    That last part matters. Restoring the vdirsyncer config after a failed
+    khal write is another write, and doing it unconditionally would overwrite
+    an edit that landed in between. It only runs while the file still carries
+    exactly the version this operation put there; otherwise the newer edit
+    stands and the caller is told the pair is out of step, which is a state
+    somebody can see and fix, unlike a silently discarded edit.
     """
     vdirsyncer_stamp, khal_stamp = stamps
     original, _ = read_config_stamped(VDIRSYNCER, "vdirsyncer")
 
+    # Both checked before either is written: finding the second file has moved
+    # on after replacing the first means rolling back a write that landed.
     khal_dir_fd, khal_name = almanac_fs.open_dir(KHAL, "khal config")
     try:
         if not almanac_fs.unchanged(khal_dir_fd, khal_name, khal_stamp):
@@ -272,10 +289,19 @@ def write_both(vdirsyncer_text, khal_text, stamps):
         os.close(khal_dir_fd)
 
     write_config(VDIRSYNCER, vdirsyncer_text, "vdirsyncer", expected=vdirsyncer_stamp)
+    written = stamp_of(VDIRSYNCER, "vdirsyncer")
+
     try:
         write_config(KHAL, khal_text, "khal", expected=khal_stamp)
     except BaseException:
-        write_config(VDIRSYNCER, original, "vdirsyncer")
+        try:
+            write_config(VDIRSYNCER, original, "vdirsyncer", expected=written)
+        except SystemExit:
+            die(
+                "the khal config could not be written and the vdirsyncer config "
+                "changed before it could be put back, so the two are now out of "
+                "step; the feed is registered for syncing but has no calendar"
+            )
         raise
 
 
@@ -300,6 +326,13 @@ def cmd_list(_args):
 
 
 def cmd_add(args):
+    # One lock for the whole read-compose-write of both files: a
+    # compare-and-swap per file still lets two runs interleave across the pair.
+    with almanac_fs.lock(VDIRSYNCER, "vdirsyncer config"):
+        return add_locked(args)
+
+
+def add_locked(args):
     name = validate_name(args.name)
     url = validate_url(args.url)
     color = validate_color(args.color)
@@ -364,6 +397,11 @@ url = "{url}"
 
 
 def cmd_remove(args):
+    with almanac_fs.lock(VDIRSYNCER, "vdirsyncer config"):
+        return remove_locked(args)
+
+
+def remove_locked(args):
     name = validate_name(args.name)
     require_config(VDIRSYNCER, "vdirsyncer")
     require_config(KHAL, "khal")

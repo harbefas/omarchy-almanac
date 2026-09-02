@@ -426,6 +426,47 @@ check "removing restores the vdirsyncer config byte for byte" '' \
 check "removing restores the khal config byte for byte" '' \
   "$(diff "$work/khal-config.pristine" "$work/khal-config")"
 
+# A feed is two files, and the pair only behaves as one change while no
+# second run is inside the transaction. With the lock held elsewhere, an add
+# refuses and leaves both configs exactly as they were, rather than getting
+# half way through the pair.
+cp "$work/vdirsyncer-config" "$work/vdirsyncer-config.before-lock"
+cp "$work/khal-config" "$work/khal-config.before-lock"
+
+python3 - "$root/bin" "$work/vdirsyncer-config" >/dev/null <<'HOLD' &
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import almanac_fs
+lock = almanac_fs.lock(sys.argv[2])
+lock.__enter__()
+print("held", flush=True)
+time.sleep(30)
+HOLD
+holder=$!
+# Wait for the lock to actually be held rather than guessing at a sleep.
+for _ in $(seq 1 100); do
+  [ -e "$work/.vdirsyncer-config.almanac.lock" ] && break
+  sleep 0.05
+done
+sleep 0.3
+
+ALMANAC_LOCK_TIMEOUT=0.2 "$root/bin/khal-feeds" add locked_out \
+  "https://example.com/locked.ics" >/dev/null 2>&1
+check "an add is refused while another change holds the lock" '1' "$?"
+check "the refused add left vdirsyncer untouched" '' \
+  "$(diff "$work/vdirsyncer-config.before-lock" "$work/vdirsyncer-config")"
+check "the refused add left khal untouched" '' \
+  "$(diff "$work/khal-config.before-lock" "$work/khal-config")"
+
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+
+"$root/bin/khal-feeds" add unlocked "https://example.com/unlocked.ics" >/dev/null
+check "the same add goes through once the lock is free" '2' \
+  "$("$root/bin/khal-feeds" list | jq -c 'length')"
+"$root/bin/khal-feeds" remove unlocked >/dev/null
+rmdir "$HOME/.local/share/khal/calendars/unlocked" 2>/dev/null
+
 VDIRSYNCER_CONFIG="$work/missing-vdirsyncer" \
   "$root/bin/khal-feeds" add missing_vdir "https://example.com/f1.ics" >/dev/null 2>&1
 check "adding a feed needs an existing vdirsyncer config" '1' "$?"
