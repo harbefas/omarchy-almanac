@@ -24,6 +24,8 @@ import json
 import os
 import re
 import select
+import signal
+import stat
 import subprocess
 import sys
 import time
@@ -68,26 +70,79 @@ def validate_color(color):
     return color
 
 
-def require_config(path, label):
-    if not path.is_file():
+# A config is a file this helper both reads and rewrites, so it is opened
+# once and everything is decided from that one descriptor: whether it is a
+# regular file, how big it is, and what it contains. Checking the pathname and
+# then reading it again is two different files if anything moves in between.
+MAX_CONFIG_BYTES = 256 * 1024
+# What the panel is shown is capped there too, but a cap that only exists
+# downstream is a cap on what is displayed, not on what is read.
+MAX_SECTIONS = 500
+MAX_SETTINGS_PER_SECTION = 100
+
+
+def open_config_fd(path, label):
+    """Open path as a regular file, refusing a symlink, or exit."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
         die(f"{label} config not found at {path}")
+    except OSError as error:
+        # ELOOP is the O_NOFOLLOW refusal: the path is a symlink.
+        die(f"{label} config at {path} cannot be read ({error.strerror})")
+
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        os.close(fd)
+        die(f"{label} config at {path} is not a regular file")
+    if info.st_size > MAX_CONFIG_BYTES:
+        os.close(fd)
+        die(f"{label} config at {path} is larger than {MAX_CONFIG_BYTES} bytes")
+    return fd
 
 
-def parse(path):
+def read_config(path, label):
+    """The config's text, read from one descriptor under a byte ceiling."""
+    fd = open_config_fd(path, label)
+    try:
+        chunks = []
+        read_so_far = 0
+        while read_so_far < MAX_CONFIG_BYTES:
+            chunk = os.read(fd, MAX_CONFIG_BYTES - read_so_far)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            read_so_far += len(chunk)
+    finally:
+        os.close(fd)
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
+def require_config(path, label):
+    os.close(open_config_fd(path, label))
+
+
+def parse(path, label="config"):
     """[(section-name, {key: value}, [line numbers]) …] in file order."""
     sections = []
-    if not path.is_file():
+    try:
+        text = read_config(path, label)
+    except FileNotFoundError:
         return sections
-    for number, line in enumerate(path.read_text().splitlines()):
+    for number, line in enumerate(text.splitlines()):
         match = SECTION.match(line.strip())
         if match:
+            # Past the ceiling the rest of the file is not parsed at all,
+            # rather than parsed and trimmed afterwards.
+            if len(sections) >= MAX_SECTIONS:
+                break
             sections.append([match.group(1), {}, [number]])
             continue
         if not sections:
             continue
         sections[-1][2].append(number)
         setting = SETTING.match(line.strip())
-        if setting:
+        if setting and len(sections[-1][1]) < MAX_SETTINGS_PER_SECTION:
             sections[-1][1][setting.group(1)] = setting.group(2).strip().strip('"')
     return sections
 
@@ -151,11 +206,61 @@ def feeds():
     return out
 
 
-def drop_sections(path, predicate):
-    """Rewrite path without the sections predicate(name) selects."""
-    lines = path.read_text().splitlines()
+def write_config(path, text, label):
+    """Replace path's contents atomically, refusing to follow a symlink.
+
+    The temp file is created beside the destination so the rename cannot cross
+    a filesystem, and both it and its directory are flushed before the rename
+    is called done: a config half-written is a calendar setup that neither
+    khal nor vdirsyncer can read.
+    """
+    directory = path.parent
+    tmp = directory / f".{path.name}.almanac.tmp"
+    fd = os.open(
+        tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+    )
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    dir_fd = os.open(directory, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def write_both(vdirsyncer_text, khal_text):
+    """Write both configs, putting the first one back if the second fails.
+
+    A feed lives in two files at once, and a feed registered in one of them is
+    a calendar khal cannot resolve. There is no way to rename two files as one
+    operation, so the narrow window between the two renames is closed by
+    restoring what was there before.
+    """
+    original = read_config(VDIRSYNCER, "vdirsyncer")
+    write_config(VDIRSYNCER, vdirsyncer_text, "vdirsyncer")
+    try:
+        write_config(KHAL, khal_text, "khal")
+    except BaseException:
+        write_config(VDIRSYNCER, original, "vdirsyncer")
+        raise
+
+
+def drop_sections(text, predicate, sections):
+    """text without the sections predicate(name) selects."""
+    lines = text.splitlines()
     doomed = set()
-    for name, _, numbers in parse(path):
+    for name, _, numbers in sections:
         if predicate(name):
             doomed.update(numbers)
             # The blank line that separated this section from the one above
@@ -164,7 +269,7 @@ def drop_sections(path, predicate):
             if above >= 0 and lines[above].strip() == "":
                 doomed.add(above)
     kept = [line for number, line in enumerate(lines) if number not in doomed]
-    path.write_text("\n".join(kept).rstrip("\n") + "\n")
+    return "\n".join(kept).rstrip("\n") + "\n"
 
 
 def cmd_list(_args):
@@ -183,9 +288,8 @@ def cmd_add(args):
     path = Path(f"~/.local/share/khal/calendars/{name}/").expanduser()
     path.mkdir(parents=True, exist_ok=True)
 
-    with VDIRSYNCER.open("a") as handle:
-        handle.write(
-            f"""
+    vdirsyncer_text = read_config(VDIRSYNCER, "vdirsyncer") + (
+        f"""
 [pair {name}_pair]
 a = "{name}_local"
 b = "{name}_remote"
@@ -201,12 +305,12 @@ fileext = ".ics"
 type = "http"
 url = "{url}"
 """
-        )
+    )
 
     # The calendar entry goes before khal's first top-level section, since
     # everything after [sqlite] would be read as a setting of it rather than a
     # new calendar.
-    lines = KHAL.read_text().splitlines()
+    lines = read_config(KHAL, "khal").splitlines()
     entry = [
         "",
         f"[[{name}]]",
@@ -222,7 +326,7 @@ url = "{url}"
             break
     else:
         lines.extend(entry)
-    KHAL.write_text("\n".join(lines).rstrip("\n") + "\n")
+    write_both(vdirsyncer_text, "\n".join(lines).rstrip("\n") + "\n")
 
     print(json.dumps({"ok": True, "added": name, "calendar": name}))
 
@@ -242,12 +346,19 @@ def cmd_remove(args):
             orphaned = feed["path"]
             break
 
-    drop_sections(
-        VDIRSYNCER,
-        lambda section: section
-        in (f"pair {name}_pair", f"storage {name}_local", f"storage {name}_remote"),
+    write_both(
+        drop_sections(
+            read_config(VDIRSYNCER, "vdirsyncer"),
+            lambda section: section
+            in (f"pair {name}_pair", f"storage {name}_local", f"storage {name}_remote"),
+            parse(VDIRSYNCER, "vdirsyncer"),
+        ),
+        drop_sections(
+            read_config(KHAL, "khal"),
+            lambda section: section == name,
+            parse(KHAL, "khal"),
+        ),
     )
-    drop_sections(KHAL, lambda section: section == name)
     print(json.dumps({"ok": True, "removed": name, "orphaned": orphaned}))
 
 
@@ -265,7 +376,19 @@ MAX_SYNC_SECONDS = float(os.environ.get("VDIRSYNCER_TIMEOUT", 120))
 
 
 def kill_and_reap(process):
-    process.kill()
+    """Kill the whole sync, not just the process this helper started.
+
+    vdirsyncer does its transport work in children, so killing it alone can
+    leave an http fetch holding the connection open with nobody waiting on it.
+    The process gets a session of its own at startup, which makes it a process
+    group leader, so the group id is the pid and the whole tree goes at once.
+    """
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        # Already gone, or never became a leader: kill what is left.
+        process.kill()
+
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
@@ -291,6 +414,9 @@ def run_bounded(command, timeout=None):
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        # Its own session, so the deadline and the byte ceiling can take down
+        # everything the sync started and not just its first process.
+        start_new_session=True,
     )
 
     chunks = []
@@ -335,6 +461,13 @@ def run_bounded(command, timeout=None):
     except subprocess.TimeoutExpired:
         kill_and_reap(process)
         timed_out = True
+
+    # vdirsyncer can exit while a child of its own is still running, and that
+    # child inherited the group, so the group is cleared either way.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
     return output.strip(), truncated, timed_out, process.returncode
 

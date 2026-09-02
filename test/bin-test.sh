@@ -46,7 +46,7 @@ cat <<'JSON'
 JSON
 STUB
 chmod +x "$work/stub/khal"
-for cmd in jq bash env sed awk cat printf timeout mktemp rm head; do
+for cmd in jq bash env sed awk cat printf timeout mktemp rm head stat; do
   ln -sf "$(command -v "$cmd")" "$work/stub/$cmd"
 done
 
@@ -409,6 +409,101 @@ check "a hung calendar helper is an error" '1' "$?"
 elapsed=$(($(date +%s) - start))
 check "a hung calendar helper gives up on the deadline" 'true' \
   "$([ "$elapsed" -lt 15 ] && echo true || echo false)"
+
+# ---- configs are read as files, not as names
+
+ln -sf "$work/khal-config" "$work/symlinked-config"
+KHAL_CONFIG="$work/symlinked-config" "$root/bin/khal-calendars" >/dev/null 2>&1
+check "a symlinked khal config is refused" '66' "$?"
+
+ln -sf "$work/vdirsyncer-config" "$work/symlinked-vdirsyncer"
+VDIRSYNCER_CONFIG="$work/symlinked-vdirsyncer" "$root/bin/khal-feeds" list >/dev/null 2>&1
+check "khal-feeds refuses a symlinked config too" '1' "$?"
+
+mkfifo "$work/fifo-config" 2>/dev/null || true
+KHAL_CONFIG="$work/fifo-config" timeout 10 "$root/bin/khal-calendars" >/dev/null 2>&1
+check "a khal config that is not a regular file is refused" '66' "$?"
+
+head -c $((300 * 1024)) /dev/zero | tr '\0' '#' >"$work/huge-config"
+KHAL_CONFIG="$work/huge-config" "$root/bin/khal-calendars" >/dev/null 2>&1
+check "an oversize khal config is refused" '66' "$?"
+
+# The filter map is the one file the panel can do without, so a bad one is not
+# an error: it means no filtering, and the agenda still comes back.
+cat >"$work/stub/khal" <<'STUB'
+#!/usr/bin/env bash
+cat <<'JSON'
+[{"start-date": "31/08/2026", "start-time": "13:30", "end-date": "31/08/2026", "end-time": "15:15", "title": "Lecce - AS Roma", "calendar": "sports_seriea", "uid": "a1", "location": "", "description": "", "repeat-symbol": ""}]
+[{"start-date": "01/09/2026", "start-time": "", "end-date": "02/09/2026", "end-time": "", "title": "Standup", "calendar": "personal", "uid": "a2", "location": "", "description": "", "repeat-symbol": ""}, {"start-date": "01/09/2026", "start-time": "20:00", "end-date": "01/09/2026", "end-time": "22:00", "title": "STL @ LAD", "calendar": "sports_mlb", "uid": "a3", "location": "", "description": "", "repeat-symbol": ""}]
+JSON
+STUB
+chmod +x "$work/stub/khal"
+
+ln -sf "$work/nope.json" "$work/symlinked-filters"
+out=$(PATH="$work/stub" KHAL_FILTERS="$work/symlinked-filters" \
+  "$root/bin/khal-events" 2026-08-31 2026-09-01)
+# nope.json drops one of the three, so obeying it through the symlink would
+# show as two events rather than three.
+check "a symlinked filter map is ignored, not obeyed" '3' "$(jq -c 'length' <<<"$out")"
+
+# ---- config writes are atomic and land in both files or neither
+
+cp "$work/vdirsyncer-config.pristine" "$work/vdirsyncer-config"
+cp "$work/khal-config.pristine" "$work/khal-config"
+
+# khal's config is made unwritable after the vdirsyncer half has been built,
+# which is the failure the two writes have to survive as a pair.
+chmod 500 "$work"
+chmod 400 "$work/khal-config"
+"$root/bin/khal-feeds" add rollback_me "https://example.com/f1.ics" >/dev/null 2>&1
+check "a feed that cannot be written to both configs fails" '1' "$?"
+chmod 700 "$work"
+chmod 600 "$work/khal-config"
+check "the vdirsyncer half is rolled back" '' \
+  "$(diff "$work/vdirsyncer-config.pristine" "$work/vdirsyncer-config")"
+check "no half-written feed is left registered" '["holidays_pair"]' \
+  "$("$root/bin/khal-feeds" list | jq -c 'map(.name)')"
+check "no temp config is left behind" '0' \
+  "$(find "$work" -maxdepth 1 -name '.*almanac.tmp' | wc -l)"
+
+rmdir "$HOME/.local/share/khal/calendars/rollback_me" 2>/dev/null
+
+# ---- the config ceiling bites before the sections are assembled
+
+{
+  echo '[general]'
+  echo 'status_path = "/tmp/status/"'
+  for i in $(seq 1 700); do
+    printf '\n[pair p%s]\na = "p%s_local"\nb = "p%s_remote"\n' "$i" "$i" "$i"
+  done
+} >"$work/many-sections"
+VDIRSYNCER_CONFIG="$work/many-sections" "$root/bin/khal-feeds" list >/dev/null 2>&1
+check "a config with more sections than the cap is still read" '0' "$?"
+
+# ---- a sync leaves nothing of its own behind
+#
+# vdirsyncer does its transport work in children, so killing the process this
+# helper started is not the same as stopping the sync.
+
+cat >"$work/sync-stub/vdirsyncer" <<'STUB'
+#!/usr/bin/env bash
+# A transport child that outlives its parent unless the group is killed.
+bash -c 'while :; do sleep 1; done' &
+echo "$!" >"$SYNC_CHILD_PIDFILE"
+echo "connecting"
+sleep 600
+STUB
+chmod +x "$work/sync-stub/vdirsyncer"
+
+export SYNC_CHILD_PIDFILE="$work/sync-child.pid"
+: >"$SYNC_CHILD_PIDFILE"
+PATH="$work/sync-stub:$PATH" VDIRSYNCER_TIMEOUT=1 timeout 30 \
+  "$root/bin/khal-feeds" sync >/dev/null 2>&1
+child=$(cat "$SYNC_CHILD_PIDFILE")
+sleep 1
+check "the transport child dies with the sync" 'gone' \
+  "$(kill -0 "$child" 2>/dev/null && echo alive || echo gone)"
+unset SYNC_CHILD_PIDFILE
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d failing\n' "$failures" >&2

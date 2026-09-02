@@ -140,6 +140,18 @@ than buffering a whole stream first. A producer that goes over is stopped and
 reported as a failure, not truncated into something that would look like an
 empty calendar.
 
+Time is capped the same way, because a producer that says nothing cannot be
+stopped by a byte ceiling: 30s for a `khal` read, 120s for a `vdirsyncer` run.
+A sync runs in a session of its own, so reaching either limit takes down the
+transport it started and not just the process Almanac called.
+
+Both configs are read as files rather than as names: a symlink is refused, the
+open descriptor is checked for being a regular file within its ceiling, and
+what is read comes from that same descriptor. Adding or removing a feed
+touches two configs, and each is replaced atomically through a temp file
+beside it; if the second write fails the first is put back, so a feed is
+either registered in both or in neither.
+
 ## How it talks to khal
 
 Everything goes through the scripts in `bin/`, so the whole data layer can be

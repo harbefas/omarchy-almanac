@@ -13,17 +13,50 @@ require() {
 }
 
 require jq
+require stat
 
 config="${KHAL_CONFIG:-$HOME/.config/khal/config}"
 
-[ -r "$config" ] || {
+# A config is read as a file, not as a name. The symlink is refused before the
+# open, and everything after it is decided from the descriptor: whether it is
+# a regular file and how big it is. Checking the path and then opening it is
+# two different files if something moves in between.
+[ -L "$config" ] && {
+  echo "khal config at $config is a symlink" >&2
+  exit 66
+}
+# Asked before the open, because opening a fifo blocks until someone writes to
+# it, and this helper would sit there rather than refuse it. The descriptor is
+# checked again below: this one only decides whether it is safe to open.
+[ -f "$config" ] || {
+  echo "khal config at $config is not a regular file" >&2
+  exit 66
+}
+exec 3<"$config" || {
   echo "khal config not found at $config" >&2
   exit 66
 }
+[ "$(stat -L -c %F /dev/fd/3)" = "regular file" ] || {
+  echo "khal config at $config is not a regular file" >&2
+  exit 66
+}
 
-awk '
+max_config_bytes=$((256 * 1024))
+[ "$(stat -L -c %s /dev/fd/3)" -le "$max_config_bytes" ] || {
+  echo "khal config at $config is larger than $max_config_bytes bytes" >&2
+  exit 66
+}
+
+# The calendar ceiling is applied here rather than only in the jq below, so a
+# config with a million sections in it is never assembled into one string
+# first. awk stops reading at the cap.
+max_calendars=500
+
+head -c "$max_config_bytes" <&3 |
+  awk -v max="$max_calendars" '
   /^[[:space:]]*\[\[[^]]+\]\][[:space:]]*$/ {
-    if (name != "") print name "\t" color "\t" readonly "\t" path
+    if (name != "") { print name "\t" color "\t" readonly "\t" path; emitted++ }
+    if (emitted >= max) exit
     name = $0
     gsub(/^[[:space:]]*\[\[|\]\][[:space:]]*$/, "", name)
     color = ""; readonly = "false"; path = ""
@@ -41,9 +74,9 @@ awk '
     else if (key == "path") path = val
     else if (key == "readonly") readonly = (tolower(val) == "true") ? "true" : "false"
   }
-  END { if (name != "") print name "\t" color "\t" readonly "\t" path }
-' "$config" |
-  jq -R -s --arg home "$HOME" --argjson maxCalendars 500 --argjson maxField 400 '
+  END { if (name != "" && emitted < max) print name "\t" color "\t" readonly "\t" path }
+' |
+  jq -R -s --arg home "$HOME" --argjson maxCalendars "$max_calendars" --argjson maxField 400 '
     split("\n")
     | map(select(length > 0) | split("\t"))
     # The config belongs to whoever runs this, but the output is read straight

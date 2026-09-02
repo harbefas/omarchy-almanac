@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import select
+import stat
 import subprocess
 import sys
 import time
@@ -101,6 +102,36 @@ def calendars():
     return json.loads(out)
 
 
+def read_ics(path):
+    """The file's bytes, or None if it is not an event worth parsing.
+
+    Opened once and judged from that descriptor: a symlink is refused, and
+    whether it is a regular file and how big it is are answered by the open
+    file rather than by the name it was opened under. One event per file is
+    the format, so anything past the ceiling is not an event, and parsing it
+    would cost more than the whole search.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ICS_BYTES:
+            return None
+        chunks = []
+        read_so_far = 0
+        while read_so_far < MAX_ICS_BYTES:
+            chunk = os.read(fd, MAX_ICS_BYTES - read_so_far)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            read_so_far += len(chunk)
+    finally:
+        os.close(fd)
+    return b"".join(chunks)
+
+
 def find_event(uid):
     """Return (calendar, path, component) for the event, or exit."""
     for cal in calendars():
@@ -108,12 +139,11 @@ def find_event(uid):
         if not root.is_dir():
             continue
         for path in root.glob("*.ics"):
-            # One event per file is the format; anything this size is not an
-            # event, and parsing it would cost more than the whole search.
-            if path.stat().st_size > MAX_ICS_BYTES:
+            raw = read_ics(path)
+            if raw is None:
                 continue
             try:
-                cal_obj = icalendar.Calendar.from_ical(path.read_bytes())
+                cal_obj = icalendar.Calendar.from_ical(raw)
             except ValueError:
                 continue
             for component in cal_obj.walk("VEVENT"):
@@ -188,8 +218,31 @@ def main():
     # cannot leave khal indexing a truncated event, and so a move never has
     # the event in two places at once.
     tmp = target.with_suffix(".ics.tmp")
-    tmp.write_bytes(cal_obj.to_ical())
-    tmp.replace(target)
+    fd = os.open(
+        tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(cal_obj.to_ical())
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    # The rename is only durable once the directory holding it is, and a move
+    # touches two of them.
+    for directory in {target.parent, path.parent}:
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
     if target != path:
         path.unlink()
 

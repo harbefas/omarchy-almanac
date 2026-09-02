@@ -21,8 +21,32 @@ require() {
 require khal
 require jq
 require timeout
+require stat
 
 filters="${KHAL_FILTERS:-$HOME/.config/omarchy/khal-filters.json}"
+
+# The filter file is read as a file rather than as a name: a symlink is
+# refused, the descriptor is checked for being a regular file, and the read is
+# bounded. A filter map is a handful of regexes, so the ceiling is generous.
+# Absent is the ordinary case and means no filters at all.
+max_filters_bytes=$((64 * 1024))
+filters_file=$(mktemp)
+main_pid=$BASHPID
+trap '[ "$BASHPID" = "$main_pid" ] && rm -f "$filters_file" "${status_file:-}"' EXIT
+echo '{}' >"$filters_file"
+
+# -f rather than -e, and asked before the open: opening a fifo blocks until
+# someone writes to it, and the agenda would never be drawn.
+if [ -f "$filters" ] && [ ! -L "$filters" ] && exec 3<"$filters"; then
+  if [ "$(stat -L -c %F /dev/fd/3)" = "regular file" ] &&
+    [ "$(stat -L -c %s /dev/fd/3)" -le "$max_filters_bytes" ]; then
+    head -c "$max_filters_bytes" <&3 >"$filters_file"
+    # An unreadable filter map is the same as none: the agenda is worth more
+    # than the filtering, and the panel has no way to show this either way.
+    jq -e . "$filters_file" >/dev/null 2>&1 || echo '{}' >"$filters_file"
+  fi
+  exec 3<&-
+fi
 
 to_khal() {
   IFS='-' read -r y m d <<<"$1"
@@ -54,12 +78,10 @@ max_bytes=$((8 * 1024 * 1024))
 # can watch the deadline bite without waiting on it.
 max_seconds="${KHAL_TIMEOUT:-30}"
 
+# Guarded on the pid, in the trap set above: the pipeline below runs its first
+# stage in a subshell, which inherits that trap and would delete these files on
+# its way out, before the status just written there could be read.
 status_file=$(mktemp)
-# Guarded on the pid: the pipeline below runs its first stage in a subshell,
-# which inherits this trap and would delete the status file on its way out,
-# before the status it just wrote there could be read.
-main_pid=$BASHPID
-trap '[ "$BASHPID" = "$main_pid" ] && rm -f "$status_file"' EXIT
 
 # khal prints one JSON array per day in the range, so the output is a stream
 # of arrays rather than one document. Each day is filtered and cut down as it
@@ -76,7 +98,7 @@ set +o pipefail
     echo $? >"$status_file"
 } |
   head -c "$max_bytes" |
-  jq -c --slurpfile f <(cat "$filters" 2>/dev/null || echo '{}') \
+  jq -c --slurpfile f "$filters_file" \
     --argjson maxField "$max_field" '
     ($f[0] // {}) as $filters
     | .[]
