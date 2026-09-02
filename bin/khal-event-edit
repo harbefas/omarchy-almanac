@@ -25,6 +25,7 @@ import json
 import os
 import select
 import stat
+import signal
 import subprocess
 import sys
 import time
@@ -32,6 +33,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 import icalendar
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import almanac_fs  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 
@@ -45,13 +50,41 @@ MAX_ICS_BYTES = 4 * 1024 * 1024
 # answering, where it would neither finish nor say anything for the byte
 # ceiling to catch. Overridable so the tests can watch it bite.
 MAX_HELPER_SECONDS = float(os.environ.get("KHAL_HELPER_TIMEOUT", 30))
+# The search itself is bounded three ways, because a calendar directory is
+# filled by vdirsyncer on behalf of whoever publishes the feed. Any one of
+# these can be the thing that runs away: the number of files, their total
+# size, or a store on a mount that answers each read slowly enough that no
+# byte ceiling ever trips.
+# Overridable so the tests can watch each ceiling bite without building a
+# store big enough to reach it honestly.
+MAX_ICS_FILES = int(os.environ.get("KHAL_SEARCH_FILES", 5000))
+MAX_SEARCH_BYTES = int(os.environ.get("KHAL_SEARCH_BYTES", 64 * 1024 * 1024))
+MAX_COMPONENTS = 500
+MAX_SEARCH_SECONDS = float(os.environ.get("KHAL_SEARCH_TIMEOUT", 20))
+
+
+def kill_group(process):
+    """Kill the helper and everything it started, then reap it."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def calendars():
     deadline = time.monotonic() + MAX_HELPER_SECONDS
     # Binary, so the ceiling is counted in the bytes actually read rather than
     # in characters a partial decode would have to guess at.
-    process = subprocess.Popen([str(HERE / "khal-calendars")], stdout=subprocess.PIPE)
+    # Its own session, so it is a process group leader: khal-calendars runs a
+    # pipeline of its own, and killing the one process this holds would leave
+    # the rest of that pipeline behind.
+    process = subprocess.Popen(
+        [str(HERE / "khal-calendars")], stdout=subprocess.PIPE, start_new_session=True
+    )
 
     chunks = []
     read_so_far = 0
@@ -80,11 +113,7 @@ def calendars():
     over = len(out) > MAX_HELPER_OUTPUT
 
     if over or timed_out:
-        process.kill()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+        kill_group(process)
         process.stdout.close()
         if timed_out:
             sys.exit(f"khal-calendars did not finish within {MAX_HELPER_SECONDS:g}s")
@@ -94,7 +123,7 @@ def calendars():
     try:
         status = process.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
-        process.kill()
+        kill_group(process)
         sys.exit(f"khal-calendars did not finish within {MAX_HELPER_SECONDS:g}s")
     if status != 0:
         sys.exit("khal-calendars failed")
@@ -102,53 +131,106 @@ def calendars():
     return json.loads(out)
 
 
-def read_ics(path):
+def read_ics(dir_fd, name):
     """The file's bytes, or None if it is not an event worth parsing.
 
-    Opened once and judged from that descriptor: a symlink is refused, and
-    whether it is a regular file and how big it is are answered by the open
-    file rather than by the name it was opened under. One event per file is
-    the format, so anything past the ceiling is not an event, and parsing it
-    would cost more than the whole search.
+    Opened relative to the directory descriptor the search is holding, so the
+    file read is the entry that was listed and not whatever took its name in
+    the meantime. A symlink is refused, and one event per file is the format,
+    so anything past the ceiling is not an event and parsing it would cost
+    more than the whole search.
     """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=dir_fd,
+        )
     except OSError:
-        return None
+        return None, None
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ICS_BYTES:
-            return None
-        chunks = []
-        read_so_far = 0
-        while read_so_far < MAX_ICS_BYTES:
-            chunk = os.read(fd, MAX_ICS_BYTES - read_so_far)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            read_so_far += len(chunk)
+            return None, None
+        return almanac_fs.read_fd(fd, MAX_ICS_BYTES), info
     finally:
         os.close(fd)
-    return b"".join(chunks)
+
+
+class Found:
+    """Where an event was found, in terms that survive the search.
+
+    The directory descriptor and the file's identity are kept, not its path:
+    the mutation has to happen in the same directory that was inspected, on
+    the same file, and a name is not enough to promise either.
+    """
+
+    def __init__(self, calendar, dir_fd, name, info, cal_obj, component):
+        self.calendar = calendar
+        self.dir_fd = dir_fd
+        self.name = name
+        self.info = info
+        self.cal_obj = cal_obj
+        self.component = component
 
 
 def find_event(uid):
-    """Return (calendar, path, component) for the event, or exit."""
+    """Return a Found for the event, or exit.
+
+    Bounded by file count, total bytes read and wall clock, all three across
+    the whole search rather than per calendar: a store that has stopped making
+    sense should not be able to hold the panel open by spreading itself over
+    several directories.
+    """
+    deadline = time.monotonic() + MAX_SEARCH_SECONDS
+    files_seen = 0
+    bytes_read = 0
+
     for cal in calendars():
-        root = Path(os.path.expanduser(cal["path"]))
-        if not root.is_dir():
+        root = os.path.expanduser(cal["path"])
+        if not os.path.isdir(root):
             continue
-        for path in root.glob("*.ics"):
-            raw = read_ics(path)
-            if raw is None:
-                continue
-            try:
-                cal_obj = icalendar.Calendar.from_ical(raw)
-            except ValueError:
-                continue
-            for component in cal_obj.walk("VEVENT"):
-                if str(component.get("UID", "")) == uid:
-                    return cal, path, cal_obj, component
+        dir_fd = almanac_fs.open_directory(root, f"calendar {cal['name']!r}")
+        keep_open = False
+        try:
+            for entry in os.scandir(dir_fd):
+                if not entry.name.endswith(".ics"):
+                    continue
+                if time.monotonic() > deadline:
+                    sys.exit(
+                        f"searching for {uid!r} took longer than "
+                        f"{MAX_SEARCH_SECONDS:g}s"
+                    )
+                files_seen += 1
+                if files_seen > MAX_ICS_FILES:
+                    sys.exit(f"searched {MAX_ICS_FILES} files without finding {uid!r}")
+
+                raw, info = read_ics(dir_fd, entry.name)
+                if raw is None:
+                    continue
+                bytes_read += len(raw)
+                if bytes_read > MAX_SEARCH_BYTES:
+                    sys.exit(
+                        f"read {MAX_SEARCH_BYTES} bytes without finding {uid!r}"
+                    )
+
+                try:
+                    cal_obj = icalendar.Calendar.from_ical(raw)
+                except ValueError:
+                    continue
+                for seen, component in enumerate(cal_obj.walk("VEVENT")):
+                    # One event per file is the format; a file claiming
+                    # thousands is not one this should walk to the end of.
+                    if seen >= MAX_COMPONENTS:
+                        break
+                    if str(component.get("UID", "")) == uid:
+                        keep_open = True
+                        return Found(
+                            cal, dir_fd, entry.name, info, cal_obj, component
+                        )
+        finally:
+            if not keep_open:
+                os.close(dir_fd)
     sys.exit(f"no event with uid {uid!r}")
 
 
@@ -171,82 +253,93 @@ def main():
     parser.add_argument("--calendar", help="move the event to this calendar")
     args = parser.parse_args()
 
-    cal, path, cal_obj, event = find_event(args.uid)
+    found = find_event(args.uid)
+    cal, event, cal_obj = found.calendar, found.component, found.cal_obj
 
-    if cal["readonly"]:
-        sys.exit(f"calendar {cal['name']!r} is readonly")
-
-    if args.delete:
-        path.unlink()
-        print(json.dumps({"ok": True, "deleted": args.uid, "calendar": cal["name"]}))
-        return
-
-    fields = {
-        "SUMMARY": args.title,
-        "LOCATION": args.location,
-        "DESCRIPTION": args.description,
-    }
-    for name, value in fields.items():
-        if value is None:
-            continue
-        event.pop(name, None)
-        event.add(name, value)
-
-    for name, value in (("DTSTART", args.start), ("DTEND", args.end)):
-        if value is None:
-            continue
-        event.pop(name, None)
-        event.add(name, parse_when(value))
-
-    target = path
-    moved_to = cal["name"]
-
-    if args.calendar and args.calendar != cal["name"]:
-        destination = next(
-            (c for c in calendars() if c["name"] == args.calendar), None
-        )
-        if destination is None:
-            sys.exit(f"no calendar named {args.calendar!r}")
-        if destination["readonly"]:
-            sys.exit(f"calendar {args.calendar!r} is readonly")
-        target = Path(os.path.expanduser(destination["path"])) / path.name
-        if target.exists():
-            sys.exit(f"{target.name} already exists in {args.calendar!r}")
-        moved_to = destination["name"]
-
-    # Written through a temp file beside the destination so a crash mid-write
-    # cannot leave khal indexing a truncated event, and so a move never has
-    # the event in two places at once.
-    tmp = target.with_suffix(".ics.tmp")
-    fd = os.open(
-        tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
-    )
     try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(cal_obj.to_ical())
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, target)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+        if cal["readonly"]:
+            sys.exit(f"calendar {cal['name']!r} is readonly")
 
-    # The rename is only durable once the directory holding it is, and a move
-    # touches two of them.
-    for directory in {target.parent, path.parent}:
-        dir_fd = os.open(directory, os.O_RDONLY | os.O_CLOEXEC)
+        if args.delete:
+            # Checked against the file that was inspected, immediately before
+            # unlinking it: a sync running alongside this can put a different
+            # event behind the same name, and deleting that one would be
+            # deleting something nobody asked about.
+            almanac_fs.unlink_leaf(found.dir_fd, found.name, found.info)
+            print(
+                json.dumps(
+                    {"ok": True, "deleted": args.uid, "calendar": cal["name"]}
+                )
+            )
+            return
+
+        fields = {
+            "SUMMARY": args.title,
+            "LOCATION": args.location,
+            "DESCRIPTION": args.description,
+        }
+        for name, value in fields.items():
+            if value is None:
+                continue
+            event.pop(name, None)
+            event.add(name, value)
+
+        for name, value in (("DTSTART", args.start), ("DTEND", args.end)):
+            if value is None:
+                continue
+            event.pop(name, None)
+            event.add(name, parse_when(value))
+
+        target_fd = found.dir_fd
+        moved_to = cal["name"]
+        move = False
+
+        if args.calendar and args.calendar != cal["name"]:
+            destination = next(
+                (c for c in calendars() if c["name"] == args.calendar), None
+            )
+            if destination is None:
+                sys.exit(f"no calendar named {args.calendar!r}")
+            if destination["readonly"]:
+                sys.exit(f"calendar {args.calendar!r} is readonly")
+            target_fd = almanac_fs.open_directory(
+                os.path.expanduser(destination["path"]),
+                f"calendar {destination['name']!r}",
+            )
+            move = True
+            moved_to = destination["name"]
+
         try:
-            os.fsync(dir_fd)
+            if move:
+                try:
+                    os.stat(found.name, dir_fd=target_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    sys.exit(f"{found.name} already exists in {args.calendar!r}")
+
+            # Still the file that was read? An edit written over something a
+            # sync replaced in the meantime would silently undo the sync.
+            if not almanac_fs.same_file(found.dir_fd, found.name, found.info):
+                sys.exit(f"{found.name} changed underneath this edit and was left alone")
+
+            # Written to a randomized temp in the destination directory and
+            # renamed over the target, both ends relative to the descriptor
+            # this is holding, so a crash mid-write cannot leave khal indexing
+            # half an event and a move never has it in two places at once.
+            almanac_fs.write_leaf(
+                target_fd, found.name, cal_obj.to_ical(), prefix="event"
+            )
+
+            if move:
+                almanac_fs.unlink_leaf(found.dir_fd, found.name, found.info)
         finally:
-            os.close(dir_fd)
+            if move:
+                os.close(target_fd)
 
-    if target != path:
-        path.unlink()
-
-    print(json.dumps({"ok": True, "uid": args.uid, "calendar": moved_to}))
+        print(json.dumps({"ok": True, "uid": args.uid, "calendar": moved_to}))
+    finally:
+        os.close(found.dir_fd)
 
 
 if __name__ == "__main__":

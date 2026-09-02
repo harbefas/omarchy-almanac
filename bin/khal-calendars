@@ -13,46 +13,33 @@ require() {
 }
 
 require jq
-require stat
+require python3
 
 config="${KHAL_CONFIG:-$HOME/.config/khal/config}"
 
-# A config is read as a file, not as a name. The symlink is refused before the
-# open, and everything after it is decided from the descriptor: whether it is
-# a regular file and how big it is. Checking the path and then opening it is
-# two different files if something moves in between.
-[ -L "$config" ] && {
-  echo "khal config at $config is a symlink" >&2
-  exit 66
-}
-# Asked before the open, because opening a fifo blocks until someone writes to
-# it, and this helper would sit there rather than refuse it. The descriptor is
-# checked again below: this one only decides whether it is safe to open.
-[ -f "$config" ] || {
-  echo "khal config at $config is not a regular file" >&2
-  exit 66
-}
-exec 3<"$config" || {
-  echo "khal config not found at $config" >&2
-  exit 66
-}
-[ "$(stat -L -c %F /dev/fd/3)" = "regular file" ] || {
-  echo "khal config at $config is not a regular file" >&2
-  exit 66
-}
-
 max_config_bytes=$((256 * 1024))
-[ "$(stat -L -c %s /dev/fd/3)" -le "$max_config_bytes" ] || {
-  echo "khal config at $config is larger than $max_config_bytes bytes" >&2
-  exit 66
-}
+
+# The config is read by bin/read-config rather than by this shell. Asking the
+# path whether it is a symlink and then opening it is two resolutions of the
+# same name and two chances for it to mean different files; read-config walks
+# every component with O_NOFOLLOW, holds the directory it lands in, and reads
+# the bytes from the descriptor it verified. None of that is expressible here.
+# Expanded rather than shelled out to dirname, so the helper keeps working
+# under a PATH that has been pared down to what it actually needs.
+here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
 
 # The calendar ceiling is applied here rather than only in the jq below, so a
 # config with a million sections in it is never assembled into one string
 # first. awk stops reading at the cap.
 max_calendars=500
 
-head -c "$max_config_bytes" <&3 |
+# Read whole rather than piped: the awk below stops at the calendar ceiling,
+# which closes the pipe under read-config, and that SIGPIPE would be
+# indistinguishable from a config that could not be read. Bounded by the same
+# ceiling read-config enforces, so this holds 256 KB at the most.
+config_text=$("$here/read-config" "$config" "$max_config_bytes")
+
+printf '%s\n' "$config_text" |
   awk -v max="$max_calendars" '
   /^[[:space:]]*\[\[[^]]+\]\][[:space:]]*$/ {
     if (name != "") { print name "\t" color "\t" readonly "\t" path; emitted++ }

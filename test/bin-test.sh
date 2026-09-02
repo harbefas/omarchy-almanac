@@ -23,6 +23,17 @@ check() {
 
 # ---- khal-calendars
 
+# A config reached through a symlinked directory is refused: the walk opens
+# every component with O_NOFOLLOW, so the path cannot be redirected part of
+# the way along.
+mkdir -p "$work/realconf"
+cp "$here/fixtures/khal-config" "$work/realconf/khal-config"
+ln -sfn "$work/realconf" "$work/linkconf"
+KHAL_CONFIG="$work/linkconf/khal-config" "$root/bin/khal-calendars" >/dev/null 2>&1
+check "a config behind a symlinked directory is refused" '66' "$?"
+KHAL_CONFIG="$work/realconf/khal-config" "$root/bin/khal-calendars" >/dev/null 2>&1
+check "the same config read directly is fine" '0' "$?"
+
 out=$(KHAL_CONFIG="$here/fixtures/khal-config" "$root/bin/khal-calendars")
 check "calendars are listed in file order" '["personal","holidays"]' "$(jq -c 'map(.name)' <<<"$out")"
 check "readonly is read from the config" '[false,true]' "$(jq -c 'map(.readonly)' <<<"$out")"
@@ -46,7 +57,7 @@ cat <<'JSON'
 JSON
 STUB
 chmod +x "$work/stub/khal"
-for cmd in jq bash env sed awk cat printf timeout mktemp rm head stat; do
+for cmd in jq bash env sed awk cat printf timeout mktemp rm head stat python3; do
   ln -sf "$(command -v "$cmd")" "$work/stub/$cmd"
 done
 
@@ -212,6 +223,74 @@ check "the oversize file is left alone" '1' \
   "$(find "$work/cal/work" -name 'huge.ics' | wc -l)"
 rm "$work/cal/work/huge.ics"
 
+# ---- khal-event-edit: the search is bounded three ways
+#
+# A calendar directory is filled by vdirsyncer on behalf of whoever publishes
+# the feed, so the number of files, their total size and the time spent
+# walking them are all capped. Each ceiling is lowered by an environment
+# variable here rather than built up to honestly.
+
+mkdir -p "$work/cal/many"
+for i in $(seq 1 12); do
+  cat >"$work/cal/many/event$i.ics" <<ICS
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:many-$i
+SUMMARY:Event $i
+DTSTART;VALUE=DATE:20260920
+DTEND;VALUE=DATE:20260921
+END:VEVENT
+END:VCALENDAR
+ICS
+done
+
+cat >"$work/many-config" <<CONFIG
+[calendars]
+
+[[many]]
+path = $work/cal/many/
+color = light green
+
+[sqlite]
+path = $work/khal.db
+CONFIG
+
+export KHAL_CONFIG="$work/many-config"
+
+# Asked for a uid that is not there, so the whole directory is walked and the
+# ceiling is what ends it. Which of the twelve files scandir hands back first
+# is not fixed, so the message is what is checked, not the exit code that a
+# plain "not found" would share.
+err=$(KHAL_SEARCH_FILES=3 "$root/bin/khal-event-edit" nobody --title X 2>&1 >/dev/null)
+check "the file count ceiling stops the search" 'searched 3 files without finding' \
+  "${err%% [\'\"]*}"
+
+err=$(KHAL_SEARCH_BYTES=10 "$root/bin/khal-event-edit" nobody --title X 2>&1 >/dev/null)
+check "the byte ceiling stops the search" 'read 10 bytes without finding' \
+  "${err%% [\'\"]*}"
+
+err=$(KHAL_SEARCH_TIMEOUT=0 "$root/bin/khal-event-edit" nobody --title X 2>&1 >/dev/null)
+check "the search deadline stops the search" 'longer than 0s' "${err##*took }"
+
+"$root/bin/khal-event-edit" many-12 --title Renamed >/dev/null
+check "an unbounded-enough search still finds the event" '1' \
+  "$(grep -c '^SUMMARY:Renamed' "$work/cal/many/event12.ics")"
+
+ln -sfn "$work/cal/many" "$work/cal/many-link"
+cat >"$work/linked-config" <<CONFIG
+[calendars]
+
+[[many]]
+path = $work/cal/many-link/
+color = light green
+CONFIG
+KHAL_CONFIG="$work/linked-config" \
+  "$root/bin/khal-event-edit" many-1 --title X >/dev/null 2>&1
+check "a symlinked calendar directory is refused" '1' "$?"
+
+export KHAL_CONFIG="$work/edit-config"
+
 unset KHAL_CONFIG
 
 # ---- khal-feeds
@@ -315,7 +394,7 @@ while :; do
 done
 STUB
 chmod +x "$work/sync-stub/vdirsyncer"
-for cmd in bash env head tr jq; do
+for cmd in bash env head tr jq python3; do
   ln -sf "$(command -v "$cmd")" "$work/sync-stub/$cmd"
 done
 

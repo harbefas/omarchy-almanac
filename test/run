@@ -4,4 +4,5 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 node test/khal-test.js "$PWD/Khal.js"
+python3 test/fs-test.py
 ./test/bin-test.sh

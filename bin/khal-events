@@ -21,31 +21,32 @@ require() {
 require khal
 require jq
 require timeout
-require stat
+require python3
 
 filters="${KHAL_FILTERS:-$HOME/.config/omarchy/khal-filters.json}"
 
-# The filter file is read as a file rather than as a name: a symlink is
-# refused, the descriptor is checked for being a regular file, and the read is
-# bounded. A filter map is a handful of regexes, so the ceiling is generous.
-# Absent is the ordinary case and means no filters at all.
+# The filter map is read by bin/read-config, which walks every component of
+# the path with O_NOFOLLOW, holds the directory it lands in, and reads the
+# bytes from the descriptor it verified rather than from the name. Asking
+# about the path and then opening it are two resolutions of the same name and
+# need not agree. Absent is the ordinary case and means no filters at all.
 max_filters_bytes=$((64 * 1024))
+# Expanded rather than shelled out to dirname, so the helper keeps working
+# under a PATH that has been pared down to what it actually needs.
+here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
+
 filters_file=$(mktemp)
 main_pid=$BASHPID
 trap '[ "$BASHPID" = "$main_pid" ] && rm -f "$filters_file" "${status_file:-}"' EXIT
 echo '{}' >"$filters_file"
 
-# -f rather than -e, and asked before the open: opening a fifo blocks until
-# someone writes to it, and the agenda would never be drawn.
-if [ -f "$filters" ] && [ ! -L "$filters" ] && exec 3<"$filters"; then
-  if [ "$(stat -L -c %F /dev/fd/3)" = "regular file" ] &&
-    [ "$(stat -L -c %s /dev/fd/3)" -le "$max_filters_bytes" ]; then
-    head -c "$max_filters_bytes" <&3 >"$filters_file"
-    # An unreadable filter map is the same as none: the agenda is worth more
-    # than the filtering, and the panel has no way to show this either way.
-    jq -e . "$filters_file" >/dev/null 2>&1 || echo '{}' >"$filters_file"
-  fi
-  exec 3<&-
+# An unreadable filter map is the same as none: the agenda is worth more than
+# the filtering, and the panel has no way to show the difference either way.
+if "$here/read-config" "$filters" "$max_filters_bytes" --optional \
+  >"$filters_file" 2>/dev/null; then
+  jq -e . "$filters_file" >/dev/null 2>&1 || echo '{}' >"$filters_file"
+else
+  echo '{}' >"$filters_file"
 fi
 
 to_khal() {
@@ -94,7 +95,7 @@ status_file=$(mktemp)
 # a failure. The statuses that do matter are read back individually below.
 set +o pipefail
 {
-  timeout "$max_seconds" khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null ||
+  timeout --kill-after=5s "$max_seconds" khal list "$start_khal" "$end_khal" "${fields[@]}" 2>/dev/null ||
     echo $? >"$status_file"
 } |
   head -c "$max_bytes" |

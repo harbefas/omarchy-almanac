@@ -32,6 +32,10 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import almanac_fs  # noqa: E402
+
 VDIRSYNCER = Path(
     os.environ.get("VDIRSYNCER_CONFIG", "~/.config/vdirsyncer/config")
 ).expanduser()
@@ -81,45 +85,28 @@ MAX_SECTIONS = 500
 MAX_SETTINGS_PER_SECTION = 100
 
 
-def open_config_fd(path, label):
-    """Open path as a regular file, refusing a symlink, or exit."""
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except FileNotFoundError:
-        die(f"{label} config not found at {path}")
-    except OSError as error:
-        # ELOOP is the O_NOFOLLOW refusal: the path is a symlink.
-        die(f"{label} config at {path} cannot be read ({error.strerror})")
-
-    info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode):
-        os.close(fd)
-        die(f"{label} config at {path} is not a regular file")
-    if info.st_size > MAX_CONFIG_BYTES:
-        os.close(fd)
-        die(f"{label} config at {path} is larger than {MAX_CONFIG_BYTES} bytes")
-    return fd
-
-
 def read_config(path, label):
-    """The config's text, read from one descriptor under a byte ceiling."""
-    fd = open_config_fd(path, label)
-    try:
-        chunks = []
-        read_so_far = 0
-        while read_so_far < MAX_CONFIG_BYTES:
-            chunk = os.read(fd, MAX_CONFIG_BYTES - read_so_far)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            read_so_far += len(chunk)
-    finally:
-        os.close(fd)
-    return b"".join(chunks).decode("utf-8", "replace")
+    """The config's text, read through a walked and verified descriptor.
+
+    Every component of the path is opened with O_NOFOLLOW relative to the one
+    before it, so neither the directories on the way nor the file at the end
+    can be swapped for something else between being checked and being read.
+    """
+    return almanac_fs.read_file(path, f"{label} config", MAX_CONFIG_BYTES).decode(
+        "utf-8", "replace"
+    )
 
 
 def require_config(path, label):
-    os.close(open_config_fd(path, label))
+    """Refuse now rather than after half a feed has been written."""
+    dir_fd, name = almanac_fs.open_dir(path, f"{label} config")
+    try:
+        fd, _ = almanac_fs.open_leaf(
+            dir_fd, name, path, f"{label} config", MAX_CONFIG_BYTES
+        )
+        os.close(fd)
+    finally:
+        os.close(dir_fd)
 
 
 def parse(path, label="config"):
@@ -207,34 +194,17 @@ def feeds():
 
 
 def write_config(path, text, label):
-    """Replace path's contents atomically, refusing to follow a symlink.
+    """Replace the config atomically, through the directory it lives in.
 
-    The temp file is created beside the destination so the rename cannot cross
-    a filesystem, and both it and its directory are flushed before the rename
-    is called done: a config half-written is a calendar setup that neither
-    khal nor vdirsyncer can read.
+    The directory is walked and held as a descriptor, and the temp file is
+    created in it under a name nothing could have guessed, so O_EXCL is a real
+    exclusion rather than a race with whoever guessed first. Both the file and
+    the directory are flushed before the rename is called done: a config half
+    written is a calendar setup neither khal nor vdirsyncer can read.
     """
-    directory = path.parent
-    tmp = directory / f".{path.name}.almanac.tmp"
-    fd = os.open(
-        tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
-    )
+    dir_fd, name = almanac_fs.open_dir(path, f"{label} config")
     try:
-        with os.fdopen(fd, "w") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-    dir_fd = os.open(directory, os.O_RDONLY | os.O_CLOEXEC)
-    try:
-        os.fsync(dir_fd)
+        almanac_fs.write_leaf(dir_fd, name, text.encode("utf-8"), prefix=label)
     finally:
         os.close(dir_fd)
 

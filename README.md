@@ -152,6 +152,16 @@ touches two configs, and each is replaced atomically through a temp file
 beside it; if the second write fails the first is put back, so a feed is
 either registered in both or in neither.
 
+## Where the configs have to live
+
+Every file this reads is opened one path component at a time, each relative to
+the directory before it, and a symlink anywhere along the way is refused. That
+closes the gap between checking a path and using it, but it also means the khal
+and vdirsyncer configs, the filter map and the calendar directories all have to
+be real files in real directories. A dotfile manager that leaves `~/.config/khal`
+as a symlink into a repository, which is how GNU Stow and chezmoi normally work,
+has to place the directory itself there instead.
+
 ## How it talks to khal
 
 Everything goes through the scripts in `bin/`, so the whole data layer can be
@@ -164,6 +174,7 @@ exercised from a terminal without opening the panel:
 | `khal-event-new` | Create an event, refusing readonly calendars |
 | `khal-event-edit` | Edit or delete an event by UID |
 | `khal-feeds` | List, add, remove and sync `.ics` feeds |
+| `read-config` | Reads a config through a walked, verified descriptor for the two shell helpers |
 
 The feed list carries two timestamps, because they answer different
 questions: `synced` is when vdirsyncer last ran the pair, and `changed` is
