@@ -44,6 +44,14 @@ check "sections that are not calendars are skipped" '2' "$(jq -c 'length' <<<"$o
 KHAL_CONFIG="$work/missing" "$root/bin/khal-calendars" >/dev/null 2>&1
 check "a missing config is an error, not an empty list" '66' "$?"
 
+# read-config treats the byte ceiling as a real bound: a value that is not a
+# non-negative integer is refused up front, not carried into the read as a
+# Python traceback.
+"$root/bin/read-config" "$here/fixtures/khal-config" nonsense >/dev/null 2>&1
+check "a non-numeric byte ceiling is refused" '1' "$?"
+"$root/bin/read-config" "$here/fixtures/khal-config" -5 >/dev/null 2>&1
+check "a negative byte ceiling is refused" '1' "$?"
+
 # ---- khal-events, against a stub khal
 
 mkdir -p "$work/stub"

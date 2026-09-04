@@ -28,7 +28,13 @@ def main():
     if len(args) != 2:
         sys.exit("usage: read-config <path> <max-bytes> [--optional]")
 
-    path, max_bytes = args[0], int(args[1])
+    path = args[0]
+    try:
+        max_bytes = int(args[1])
+    except ValueError:
+        sys.exit(f"read-config: byte ceiling {args[1]!r} is not a number")
+    if max_bytes < 0:
+        sys.exit(f"read-config: byte ceiling {max_bytes} is negative")
 
     if optional and not os.path.lexists(os.path.expanduser(path)):
         return
